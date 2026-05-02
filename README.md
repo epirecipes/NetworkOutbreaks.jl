@@ -33,7 +33,7 @@ t, μI = mean_curve(ens, :I)
 | `DirectSSA()` | Gillespie direct method — O(N) per event |
 | `NextReaction()` | Gibson–Bruck next-reaction — O(log N) per event, local updates |
 | `CompositionRejection()` | Slepoy *et al.* 2008 — O(1) amortised via log-bucket composition + rejection; fastest for fixed-degree graphs at N ≳ 2000 |
-| `HAS()` | Hierarchical Adaptive Sampling — O(log N) deterministic via sum tree; **not yet implemented** (see `docs/HAS_PLAN.md`) |
+| `HAS()` | Hierarchical Adaptive Sampling — O(log N) deterministic via sum tree; supports `TimeVaryingNetwork` |
 
 Pass any algorithm to `simulate` or `simulate_ensemble`:
 

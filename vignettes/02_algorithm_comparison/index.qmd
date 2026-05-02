@@ -388,3 +388,29 @@ components bridged at t = 10) or rewire during the initial transient phase
 @printf("Julia version:          %s\n", string(VERSION))
 @printf("NetworkOutbreaks:       %s\n", pathof(NetworkOutbreaks))
 ```
+
+---
+
+## HAS (Hierarchical Adaptive Sampling)
+
+`HAS` is now fully implemented and can be dropped into any comparison
+harness in place of `DirectSSA`, `NextReaction`, or `CompositionRejection`.
+It maintains per-node hazards in a complete binary sum tree so that event
+selection costs O(log N) deterministically, regardless of rate
+heterogeneity.  For large or degree-heterogeneous networks (e.g. power-law)
+where `CompositionRejection`'s O(1)-amortised guarantee weakens, `HAS`
+is the preferred choice.
+
+To run the three-algorithm comparison above with `HAS` included, add a
+fourth ensemble call:
+
+```julia
+ens_has = simulate_ensemble(spec; nsims = nsims, seed = ens_seed + 3,
+                            algorithm = HAS(), parallel = true)
+_, μ_has = mean_curve(ens_has, :I; tgrid = tgrid)
+```
+
+`HAS` also accepts a `TimeVaryingNetwork`; edge updates trigger O(log N)
+tree refreshes for the two endpoint nodes, and the algorithm naturally
+redraws the next waiting time from the updated total rate.
+
