@@ -1,0 +1,22 @@
+project:
+  type: default
+
+engine: julia
+
+freeze: auto
+
+execute:
+  fig-format: png
+  fig-dpi: 150
+  fig-width: 7
+  fig-height: 5
+
+format:
+  html:
+    toc: true
+    code-fold: false
+    theme: cosmo
+    embed-resources: true
+
+julia:
+  project: "."
