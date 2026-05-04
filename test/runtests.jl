@@ -395,6 +395,21 @@ using Statistics: mean
         @test traj.algorithm == :HAS
     end
 
+    @testset "via-specific infection event indices" begin
+        comps = [:S, :A, :B, :I]
+        inf   = [false, true, true, true]
+        trs   = [OutbreakTransition(:S, :I, 1.0, :infection; via = [:A]),
+                 OutbreakTransition(:S, :I, 1.0, :infection; via = [:B])]
+        model = OutbreakModel(comps, inf, trs; name = :via_index)
+        g = SimpleGraph(2); add_edge!(g, 1, 2)
+        spec = OutbreakSpec(model = model, network = g,
+                            initial = SeedNodes(:B => [2]),
+                            tspan = (0.0, 10.0))
+        traj = simulate(spec; algorithm = DirectSSA(), seed = 1, keep = :events)
+        @test length(traj.events) == 1
+        @test traj.events[1].transition_index == 2
+    end
+
     @testset "CompositionRejection keep=:events" begin
         comps = [:S, :I]
         inf   = [false, true]

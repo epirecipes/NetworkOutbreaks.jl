@@ -112,10 +112,11 @@ function _has_sample_node(tree::Vector{Float64}, N_tree::Int, n::Int,
             k = right
         end
     end
-    # Convert leaf tree-index back to 1-indexed node number; clamp for
-    # inactive padding leaves (index > n) that carry hazard 0.0.
+    # Convert leaf tree-index back to 1-indexed node number. Padding leaves
+    # carry zero hazard and should be unreachable; return 0 defensively rather
+    # than biasing the final real node if floating-point drift ever reaches one.
     v = k - N_tree + 1
-    return clamp(v, 1, n)
+    return v <= n ? v : 0
 end
 
 # ---------------------------------------------------------------------------

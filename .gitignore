@@ -1,0 +1,7 @@
+# Local assistant guidance files
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+.copilot/
+.github/copilot-instructions.md
+

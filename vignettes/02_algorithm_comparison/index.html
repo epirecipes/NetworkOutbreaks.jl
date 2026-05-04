@@ -7,7 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
 <meta name="author" content="Simon Frost">
-<meta name="dcterms.date" content="2026-05-02">
+<meta name="dcterms.date" content="2026-05-03">
 
 <title>Algorithm Comparison: DirectSSA, NextReaction, and CompositionRejection</title>
 <style>
@@ -2247,6 +2247,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
   <li><a href="#honest-assessment" id="toc-honest-assessment" class="nav-link" data-scroll-target="#honest-assessment">Honest assessment</a></li>
   </ul></li>
   <li><a href="#reproducibility" id="toc-reproducibility" class="nav-link" data-scroll-target="#reproducibility">Reproducibility</a></li>
+  <li><a href="#has-hierarchical-adaptive-sampling" id="toc-has-hierarchical-adaptive-sampling" class="nav-link" data-scroll-target="#has-hierarchical-adaptive-sampling">HAS (Hierarchical Adaptive Sampling)</a></li>
   </ul>
 </nav>
 </div>
@@ -2272,7 +2273,7 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
     <div>
     <div class="quarto-title-meta-heading">Published</div>
     <div class="quarto-title-meta-contents">
-      <p class="date">May 2, 2026</p>
+      <p class="date">May 3, 2026</p>
     </div>
   </div>
   
@@ -2416,9 +2417,9 @@ var requirejs,require,define;(function(global,setTimeout){var req,s,head,baseEle
 <div class="cell-output cell-output-stdout">
 <pre><code>
 Wall-clock times (80 sims × N=2000, parallel=true)
-  DirectSSA:            191.37 s
-  NextReaction:         1.96 s
-  CompositionRejection: 1.79 s</code></pre>
+  DirectSSA:            199.44 s
+  NextReaction:         2.02 s
+  CompositionRejection: 1.91 s</code></pre>
 </div>
 </div>
 </section>
@@ -2534,11 +2535,11 @@ Wall-clock times (80 sims × N=2000, parallel=true)
   (threshold 0.05; both should be well below)
 
 === Wall-clock summary ===
-  DirectSSA:               191.37 s
-  NextReaction:            1.96 s
-  CompositionRejection:    1.79 s
-  Speed-up CR / Direct:   107.11×
-  Speed-up NR / Direct:   97.41×</code></pre>
+  DirectSSA:               199.44 s
+  NextReaction:            2.02 s
+  CompositionRejection:    1.91 s
+  Speed-up CR / Direct:   104.35×
+  Speed-up NR / Direct:   98.74×</code></pre>
 </div>
 </div>
 <p><strong>Interpretation.</strong> For a k = 4 regular graph with N = 2000 SIS dynamics all three algorithms produce statistically equivalent ensemble means — as expected for exact samplers. Wall-clock time typically orders <code>CompositionRejection</code> &lt; <code>NextReaction</code> &lt; <code>DirectSSA</code> at this scale because bucket-maintenance overhead is lower than heap overhead at moderate N and the all-rates sweep in DirectSSA is O(N) per event.</p>
@@ -2763,6 +2764,16 @@ Julia version:          1.12.5
 NetworkOutbreaks:       /Users/sdwfrost/Projects/edgebasedmodels/NetworkOutbreaks.jl/src/NetworkOutbreaks.jl</code></pre>
 </div>
 </div>
+<hr>
+</section>
+<section id="has-hierarchical-adaptive-sampling" class="level2">
+<h2 class="anchored" data-anchor-id="has-hierarchical-adaptive-sampling">HAS (Hierarchical Adaptive Sampling)</h2>
+<p><code>HAS</code> is now fully implemented and can be dropped into any comparison harness in place of <code>DirectSSA</code>, <code>NextReaction</code>, or <code>CompositionRejection</code>. It maintains per-node hazards in a complete binary sum tree so that event selection costs O(log N) deterministically, regardless of rate heterogeneity. For large or degree-heterogeneous networks (e.g. power-law) where <code>CompositionRejection</code>’s O(1)-amortised guarantee weakens, <code>HAS</code> is the preferred choice.</p>
+<p>To run the three-algorithm comparison above with <code>HAS</code> included, add a fourth ensemble call:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb28"><pre class="sourceCode julia code-with-copy"><code class="sourceCode julia"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true" tabindex="-1"></a>ens_has <span class="op">=</span> <span class="fu">simulate_ensemble</span>(spec; nsims <span class="op">=</span> nsims, seed <span class="op">=</span> ens_seed <span class="op">+</span> <span class="fl">3</span>,</span>
+<span id="cb28-2"><a href="#cb28-2" aria-hidden="true" tabindex="-1"></a>                            algorithm <span class="op">=</span> <span class="fu">HAS</span>(), parallel <span class="op">=</span> <span class="cn">true</span>)</span>
+<span id="cb28-3"><a href="#cb28-3" aria-hidden="true" tabindex="-1"></a>_, μ_has <span class="op">=</span> <span class="fu">mean_curve</span>(ens_has, <span class="op">:</span>I; tgrid <span class="op">=</span> tgrid)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><code>HAS</code> also accepts a <code>TimeVaryingNetwork</code>; edge updates trigger O(log N) tree refreshes for the two endpoint nodes, and the algorithm naturally redraws the next waiting time from the updated total rate.</p>
 </section>
 
 </main>

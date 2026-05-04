@@ -223,7 +223,23 @@ function _simulate_impl(::CompositionRejection, spec::OutbreakSpec,
             v = members[rand(rng, 1:length(members))]
             rand(rng) * a_max_b <= node_hazard[v] && (fired_node = v; break)
         end
-        fired_node == 0 && continue   # should not happen with P ≥ 0.5 acceptance
+        if fired_node == 0
+            members = bucket_members[b]
+            if isempty(members) || bucket_sum[b] <= 0.0
+                total_rate = sum(bucket_sum)
+                continue
+            end
+            target_in_bucket = rand(rng) * bucket_sum[b]
+            cum_in_bucket = 0.0
+            for v in members
+                cum_in_bucket += node_hazard[v]
+                if target_in_bucket <= cum_in_bucket
+                    fired_node = v
+                    break
+                end
+            end
+            fired_node == 0 && (fired_node = members[end])
+        end
 
         # --- Sample which transition fires ---
         src_idx = node_state[fired_node]

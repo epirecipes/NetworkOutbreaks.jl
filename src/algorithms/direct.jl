@@ -233,7 +233,19 @@ function _simulate_impl(::DirectSSA, spec::OutbreakSpec, seed::UInt64, keep::Sym
             fired_tr = if length(trs) == 1
                 trs[1]
             else
-                weights = Float64[tr.rate for tr in trs]
+                fill!(infectious_neighbour_counts, 0)
+                for u2 in neighbors(g, picked_v)
+                    infectious_neighbour_counts[node_state[u2]] += 1
+                end
+                weights = Float64[]
+                for tr in trs
+                    mask = via_mask[tr]
+                    n_via = 0
+                    for i in 1:C
+                        mask[i] && (n_via += infectious_neighbour_counts[i])
+                    end
+                    push!(weights, tr.rate * n_via)
+                end
                 trs[sample(rng, 1:length(trs), Weights(weights))]
             end
         end
@@ -292,7 +304,8 @@ end
 
 function _transition_index(model::OutbreakModel, tr::OutbreakTransition)
     @inbounds for (k, t) in pairs(model.transitions)
-        if t.from == tr.from && t.to == tr.to && t.rate == tr.rate && t.type == tr.type
+        if t.from == tr.from && t.to == tr.to && t.rate == tr.rate &&
+                t.type == tr.type && t.via == tr.via
             return k
         end
     end

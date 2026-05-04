@@ -659,7 +659,7 @@ version = "1.12.3"
     Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 
 [[deps.EdgeBasedModels]]
-deps = ["Catalyst", "Graphs", "LinearAlgebra", "ModelingToolkit", "NetworkOutbreaks", "OrdinaryDiffEqDefault", "StableRNGs", "Symbolics"]
+deps = ["Catalyst", "LinearAlgebra", "ModelingToolkit", "OrdinaryDiffEqDefault", "Symbolics"]
 path = "../../EdgeBasedModels.jl"
 uuid = "788486a7-4543-4eb7-a8c1-3fa6b4d68a5e"
 version = "0.1.0"
@@ -1533,19 +1533,20 @@ uuid = "ca575930-c2e3-43a9-ace4-1e988b2c1908"
 version = "1.3.0"
 
 [[deps.NetworkOutbreaks]]
-deps = ["DataStructures", "EdgeBasedModels", "Graphs", "NodeBasedModels", "Random", "StableRNGs", "Statistics", "StatsBase"]
+deps = ["DataStructures", "Graphs", "Random", "StableRNGs", "Statistics", "StatsBase"]
 path = ".."
 uuid = "c8ed0651-6ce8-4fc1-88f1-92cb4e2eac22"
 version = "0.1.0"
+weakdeps = ["EdgeBasedModels", "NodeBasedModels"]
 
     [deps.NetworkOutbreaks.extensions]
     NetworkOutbreaksEdgeBasedModelsExt = "EdgeBasedModels"
     NetworkOutbreaksNodeBasedModelsExt = "NodeBasedModels"
 
 [[deps.NodeBasedModels]]
-deps = ["Catalyst", "Graphs", "JumpProcesses", "LinearAlgebra", "ModelingToolkit", "NetworkDynamics", "NetworkOutbreaks", "OrdinaryDiffEqDefault", "OrdinaryDiffEqTsit5", "Plots", "Random", "StableRNGs", "Statistics", "Symbolics"]
+deps = ["Catalyst", "Graphs", "JumpProcesses", "LinearAlgebra", "ModelingToolkit", "NetworkDynamics", "OrdinaryDiffEqDefault", "Random", "Statistics", "Symbolics"]
 path = "../../NodeBasedModels.jl"
-uuid = "b1c2d3e4-f5a6-7890-bcde-f12345678901"
+uuid = "2d279cd2-8483-4773-ac2b-bc6b7d472d20"
 version = "0.1.0"
 
 [[deps.NonlinearSolve]]

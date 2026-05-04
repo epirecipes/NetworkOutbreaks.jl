@@ -28,12 +28,12 @@ t, μI = mean_curve(ens, :I)
 
 ## Algorithms
 
-| Type | Description |
-|---|---|
-| `DirectSSA()` | Gillespie direct method — O(N) per event |
-| `NextReaction()` | Gibson–Bruck next-reaction — O(log N) per event, local updates |
-| `CompositionRejection()` | Slepoy *et al.* 2008 — O(1) amortised via log-bucket composition + rejection; fastest for fixed-degree graphs at N ≳ 2000 |
-| `HAS()` | Hierarchical Adaptive Sampling — O(log N) deterministic via sum tree; supports `TimeVaryingNetwork` |
+| Type | Description | `TimeVaryingNetwork` |
+|---|---|:---:|
+| `DirectSSA()` | Gillespie direct method — O(N) per event | ✓ |
+| `NextReaction()` | Gibson–Bruck next-reaction — O(log N) per event, local updates | ✓ |
+| `CompositionRejection()` | Slepoy *et al.* 2008 — O(1) amortised via log-bucket composition + rejection; fastest for fixed-degree graphs at N ≳ 2000 | ✗ |
+| `HAS()` | Hierarchical Adaptive Sampling — O(log N) deterministic via sum tree | ✓ |
 
 Pass any algorithm to `simulate` or `simulate_ensemble`:
 
@@ -46,8 +46,9 @@ ens  = simulate_ensemble(spec; nsims = 80, seed = 1, algorithm = NextReaction(),
 ## Time-varying networks
 
 Wrap a mutable `AbstractGraph` with a sorted list of edge-level updates to
-get a `TimeVaryingNetwork`.  `DirectSSA` and `NextReaction` interleave the
-graph mutations with reactions automatically:
+get a `TimeVaryingNetwork`.  `DirectSSA`, `NextReaction`, and `HAS` interleave
+the graph mutations with reactions automatically. `CompositionRejection`
+currently rejects time-varying topologies with an `ArgumentError`.
 
 ```julia
 using Graphs
@@ -68,39 +69,36 @@ A plain `AbstractGraph` passed to `OutbreakSpec` is auto-wrapped in
 
 ## Known issues
 
-### Circular-dependency precompilation warning
+### Package-extension adapters
 
-When loading `NetworkOutbreaks` together with `EdgeBasedModels` or
-`NodeBasedModels`, Julia emits a warning of the form:
+`NetworkOutbreaks` ships two
+[package extensions](https://pkgdocs.julialang.org/v1/creating-packages/#Conditional-loading-of-code-in-packages-(Extensions))
+that activate when `EdgeBasedModels` or `NodeBasedModels` is present in the
+environment. Each extension defines an `OutbreakModel(...)` constructor that
+converts the respective package's model type.
 
-```
-┌ Warning: Circular dependency detected.
-│ Precompilation will be skipped for dependencies in this cycle:
-│  ┌ NetworkOutbreaks
-│  │  NodeBasedModels
-│  └── NetworkOutbreaks → NetworkOutbreaksEdgeBasedModelsExt
-```
+These adapters are declared through `[weakdeps]`, so `NetworkOutbreaks` does
+not force either deterministic modelling package to load in ordinary use.
+If an environment still reports a circular precompilation warning, resolve it
+against the current `Project.toml` files so the weak-dependency metadata is
+used.
 
-This warning is cosmetic. The root cause is a mutual dependency:
+## Release highlights
 
-- `NetworkOutbreaks` ships two
-  [package extensions](https://pkgdocs.julialang.org/v1/creating-packages/#Conditional-loading-of-code-in-packages-(Extensions))
-  that activate when `EdgeBasedModels` or `NodeBasedModels` is present in the
-  environment. Each extension defines an `OutbreakModel(...)` constructor that
-  converts the respective package's model type.
-- `EdgeBasedModels` and `NodeBasedModels` both depend on `NetworkOutbreaks`
-  (they call `simulate_ensemble` in their own code and tests).
+This release makes `NetworkOutbreaks.jl` the stochastic companion for the
+edge- and node-based deterministic packages:
 
-Julia's precompilation graph therefore contains a cycle:
-`NetworkOutbreaks → ext/EBMExt → EdgeBasedModels → NetworkOutbreaks`.
-Julia handles this cycle gracefully at runtime — all packages and their
-extensions load correctly — but skips caching the affected modules, so
-compilation is repeated on each start-up.
+- Four simulation algorithms: `DirectSSA`, `NextReaction`,
+  `CompositionRejection`, and `HAS`.
+- `TimeVaryingNetwork` support in `DirectSSA`, `NextReaction`, and `HAS`;
+  `CompositionRejection` rejects time-varying topologies explicitly.
+- Threaded deterministic ensembles via `simulate_ensemble`.
+- Reinfection-counting analysis helpers and comparison vignettes.
+- Weak-dependency adapters from `EdgeBasedModels.DiseaseProgression` and
+  `NodeBasedModels.CompartmentalModel` into `OutbreakModel`.
+- Event logs now distinguish `via`-specific infection transitions, and HAS /
+  CompositionRejection include robustness fixes for low-probability edge cases.
 
-**Possible fix (not yet implemented):** relocate the two adapter
-constructors from `NetworkOutbreaks`'s `ext/` directory into corresponding
-extension files inside `EdgeBasedModels` and `NodeBasedModels` themselves
-(activated when `NetworkOutbreaks` is loaded). This reversal removes the
-cycle. The refactor was deferred because it would require editing the
-downstream package sources and is low-risk but non-trivial (the adapters
-are ~60 lines each).
+## License
+
+NetworkOutbreaks.jl is licensed under the MIT License.

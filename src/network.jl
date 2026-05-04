@@ -39,7 +39,7 @@ Each update is a `NamedTuple` with fields:
 The graph is `deepcopy`-ed at the start of each trajectory so `simulate` and
 `simulate_ensemble` are safe to call repeatedly on the same spec.
 
-Currently supported algorithms: `DirectSSA`, `NextReaction`.
+Currently supported algorithms: `DirectSSA`, `NextReaction`, and `HAS`.
 `CompositionRejection` raises an `ArgumentError` if combined with a
 `TimeVaryingNetwork`.
 """
