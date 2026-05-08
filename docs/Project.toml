@@ -1,0 +1,8 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+EdgeBasedModels = "788486a7-4543-4eb7-a8c1-3fa6b4d68a5e"
+NetworkOutbreaks = "c8ed0651-6ce8-4fc1-88f1-92cb4e2eac22"
+NodeBasedModels = "2d279cd2-8483-4773-ac2b-bc6b7d472d20"
+
+[compat]
+Documenter = "1"

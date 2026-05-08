@@ -5,3 +5,9 @@ CLAUDE.local.md
 .copilot/
 .github/copilot-instructions.md
 
+
+# Documenter build output
+docs/build/
+docs/Manifest.toml
+vignettes/_freeze/
+vignettes/.quarto/

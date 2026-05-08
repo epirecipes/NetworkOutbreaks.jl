@@ -50,14 +50,21 @@ using Printf
 
 ## Parameters
 
+::: {.callout-note}
+**$R_0=2$ anchor.** For SIS on a $k=4$ regular configuration-model network, $R_0=T(k-1)$. With $\gamma=0.25$, $T=2/3$, so the comparable per-edge transmission rate is $\beta=0.5$ and the seed fraction is 1%.
+:::
+
 ```{julia}
 N       = 500
-k       = 3
-β_val   = 0.6
-γ_val   = 0.4
-ε_val   = 0.05          # initial infected fraction
+k       = 4
+γ_val   = 0.25
+R0_target = 2.0
+κ_excess = k - 1
+T_val   = R0_target / κ_excess
+β_val   = T_val * γ_val / (1 - T_val)
+ε_val   = 0.01          # initial infected fraction
 L       = 4             # reinfection-count cap
-tmax    = 80.0
+tmax    = 120.0
 save_dt = 1.0
 nsims   = 200
 ens_seed = 2024_05_02

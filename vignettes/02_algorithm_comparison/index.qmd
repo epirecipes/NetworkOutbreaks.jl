@@ -49,13 +49,20 @@ using Printf
 
 ### Parameters
 
+::: {.callout-note}
+**$R_0=2$ anchor.** For the $k=4$ regular network, $T=2/(k-1)=2/3$ and with $\gamma=0.25$ the stochastic per-edge rate is $\tau=0.5$. Algorithm comparisons use this shared disease process.
+:::
+
 ```{julia}
 N        = 2000
 k        = 4
-τ_val    = 0.5
-γ_val    = 1.0
-ε_val    = 0.02
-tmax     = 30.0
+γ_val    = 0.25
+R0_target = 2.0
+κ_excess = k - 1
+T_val    = R0_target / κ_excess
+τ_val    = T_val * γ_val / (1 - T_val)
+ε_val    = 0.01
+tmax     = 80.0
 nsims    = 80
 ens_seed = 20_240_502
 save_dt  = 0.5
@@ -212,17 +219,18 @@ We explore what happens when 20 % of edges are rewired at time t = 10.  The
 rewiring is a **random degree-preserving shuffle**: we remove 20 % of existing
 edges and add the same number of new edges sampled uniformly at random from
 non-edges.  This preserves the degree distribution and therefore preserves
-the mean-field R₀ = τk/γ.
+the anchored regular-network $R_0=T(k-1)$.
 
 ### Build the time-varying spec
 
 ```{julia}
 N_tvn  = 500
-k_tvn  = 3
-τ_tvn  = 0.5
-γ_tvn  = 1.0
-ε_tvn  = 0.05
-tmax_tvn = 40.0
+k_tvn  = 4
+γ_tvn  = 0.25
+T_tvn  = R0_target / (k_tvn - 1)
+τ_tvn  = T_tvn * γ_tvn / (1 - T_tvn)
+ε_tvn  = 0.01
+tmax_tvn = 80.0
 nsims_tvn = 100
 seed_tvn  = 20_240_503
 
