@@ -7,7 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
 <meta name="author" content="Simon Frost">
-<meta name="dcterms.date" content="2026-05-08">
+<meta name="dcterms.date" content="2026-05-13">
 
 <title>Algorithm Comparison: DirectSSA, NextReaction, and CompositionRejection</title>
 <style>
@@ -2388,7 +2388,7 @@ window.Quarto = {
   <li><a href="#reproducibility" id="toc-reproducibility" class="nav-link" data-scroll-target="#reproducibility">Reproducibility</a></li>
   <li><a href="#has-hierarchical-adaptive-sampling" id="toc-has-hierarchical-adaptive-sampling" class="nav-link" data-scroll-target="#has-hierarchical-adaptive-sampling">HAS (Hierarchical Adaptive Sampling)</a></li>
   </ul>
-</nav>
+<div class="quarto-alternate-formats"><h2>Other Formats</h2><ul><li><a href="index.pdf"><i class="bi bi-file-pdf"></i>PDF</a></li><li><a href="index.md"><i class="bi bi-file-code"></i>Github (GFM)</a></li></ul></div></nav>
 </div>
 <main class="content" id="quarto-document-content">
 
@@ -2412,7 +2412,7 @@ window.Quarto = {
     <div>
     <div class="quarto-title-meta-heading">Published</div>
     <div class="quarto-title-meta-contents">
-      <p class="date">May 8, 2026</p>
+      <p class="date">May 13, 2026</p>
     </div>
   </div>
   
@@ -2572,9 +2572,9 @@ Note
 <div class="cell-output cell-output-stdout">
 <pre><code>
 Wall-clock times (80 sims × N=2000, parallel=true)
-  DirectSSA:            114.27 s
-  NextReaction:         2.54 s
-  CompositionRejection: 2.37 s</code></pre>
+  DirectSSA:            189.02 s
+  NextReaction:         4.56 s
+  CompositionRejection: 4.65 s</code></pre>
 </div>
 </div>
 </section>
@@ -2690,11 +2690,11 @@ Wall-clock times (80 sims × N=2000, parallel=true)
   (threshold 0.05; both should be well below)
 
 === Wall-clock summary ===
-  DirectSSA:               114.27 s
-  NextReaction:            2.54 s
-  CompositionRejection:    2.37 s
-  Speed-up CR / Direct:   48.27×
-  Speed-up NR / Direct:   44.98×</code></pre>
+  DirectSSA:               189.02 s
+  NextReaction:            4.56 s
+  CompositionRejection:    4.65 s
+  Speed-up CR / Direct:   40.65×
+  Speed-up NR / Direct:   41.42×</code></pre>
 </div>
 </div>
 <p><strong>Interpretation.</strong> For a k = 4 regular graph with N = 2000 SIS dynamics all three algorithms produce statistically equivalent ensemble means — as expected for exact samplers. Wall-clock time typically orders <code>CompositionRejection</code> &lt; <code>NextReaction</code> &lt; <code>DirectSSA</code> at this scale because bucket-maintenance overhead is lower than heap overhead at moderate N and the all-rates sweep in DirectSSA is O(N) per event.</p>
