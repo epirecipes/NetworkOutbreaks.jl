@@ -1,6 +1,6 @@
 # Reinfection Validation: SIS on a Random 3-Regular Network
 Simon Frost
-2026-05-13
+2026-05-14
 
 - [Problem statement](#problem-statement)
 - [Setup](#setup)
@@ -68,7 +68,8 @@ using Printf
 >
 > **$R_0=2$ anchor.** For SIS on a $k=4$ regular configuration-model
 > network, $R_0=T(k-1)$. With $\gamma=0.25$, $T=2/3$, so the comparable
-> per-edge transmission rate is $\beta=0.5$ and the seed fraction is 1%.
+> per-edge transmission rate is $\beta=0.5$ and the seed fraction is
+> 0.1%.
 
 ``` julia
 N       = 500
@@ -78,7 +79,7 @@ R0_target = 2.0
 κ_excess = k - 1
 T_val   = R0_target / κ_excess
 β_val   = T_val * γ_val / (1 - T_val)
-ε_val   = 0.01          # initial infected fraction
+ε_val   = 0.001          # initial infected fraction
 L       = 4             # reinfection-count cap
 tmax    = 120.0
 save_dt = 1.0
@@ -91,7 +92,7 @@ tgrid = collect(0.0:save_dt:tmax)
         N, k, β_val, γ_val, ε_val, L, tmax)
 ```
 
-    Parameters: N=500, k=4, β=0.50, γ=0.25, ε=0.01, L=4, t_max=120.0
+    Parameters: N=500, k=4, β=0.50, γ=0.25, ε=0.00, L=4, t_max=120.0
 
 ## Host graph
 
@@ -147,7 +148,7 @@ end
         tmax, μI_norm[end], σI_norm[end], nsims)
 ```
 
-    Gillespie prevalence at t=120.0: 0.8686 ± 0.0167 (1σ, n=200)
+    Gillespie prevalence at t=120.0: 0.0000 ± 0.0000 (1σ, n=200)
 
 ## ODE approximation 1 — NodeBasedModels.jl (pairwise, L = 4)
 
@@ -170,9 +171,6 @@ I_nbm     = totals_re[:I]
 @printf("NBM prevalence at t=%.1f: %.4f\n", tmax, I_nbm[end])
 ```
 
-    ┌ Warning: Verbosity toggle: dt_epsilon 
-    │  At t= 72.66018950131141, dt was forced below floating point epsilon 1.4210854715202004e-14, and step error estimate = 5.288310882996939e-10. Aborting. There is either an error in your model specification or the true solution is unstable (or the true solution can not be represented in the precision of Float64.
-    └ @ SciMLBase ~/.julia/packages/SciMLBase/hLfdZ/src/integrator_interface.jl:735
     NBM prevalence at t=120.0: 0.8696
 
 ## ODE approximation 2 — EdgeBasedModels.jl (EBCM, L = 4)
@@ -251,11 +249,11 @@ h_frac_emp = h_mean_emp ./ N        # fraction of population
 ```
 
     5-element Vector{Float64}:
-     0.0
-     0.0
-     0.0
-     0.0
      1.0
+     0.0
+     0.0
+     0.0
+     0.0
 
 ### ODE-predicted stratum densities at $t = t_{\max}$
 
@@ -328,13 +326,13 @@ max_dev_ebm = maximum(abs.(I_ebm_g .- μI_norm))
 
 
     === Endpoint comparison (I/N at t=120.0) ===
-      Gillespie mean:  0.86861  (±0.01670 1σ)
-      NBM L=4 :        0.86957  (+0.00096)
-      EBM L=4 :        0.81818  (-0.05043)
+      Gillespie mean:  0.00000  (±0.00000 1σ)
+      NBM L=4 :        0.86957  (+0.86957)
+      EBM L=4 :        0.81818  (+0.81818)
 
       Max |ODE - Gillespie| over trajectory:
-        NBM: 0.02291
-        EBM: 0.54280
+        NBM: 0.86957
+        EBM: 0.81818
 
 ## Honest framing: is $L = 4$ sufficient?
 
@@ -359,7 +357,7 @@ end
 
 
     === L = 4 cap adequacy ===
-      Empirical fraction in bucket p = 4+ : 1.0000
+      Empirical fraction in bucket p = 4+ : 0.0000
       Empirical fraction in buckets 1..3 :  0.0000
       Saturation ratio: all reinfected nodes are in bucket 4+;
       intermediate buckets are essentially empty. L = 4 is far too small.
@@ -404,7 +402,7 @@ but absent from the configuration-model or pair-equation assumptions.
     === Reproducibility ===
     Host graph seed:      StableRNG(20240502)
     Gillespie ensemble:   200 runs, seed=20240502, parallel=true
-    Initial infected:     1% of nodes (SeedFraction)
+    Initial infected:     0% of nodes (SeedFraction)
     NBM solver:           package default (reltol/abstol not set)
     EBM solver:           package default (reltol/abstol not set)
     Julia version:        1.12.5

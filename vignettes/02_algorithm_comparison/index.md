@@ -1,6 +1,6 @@
 # Algorithm Comparison: DirectSSA, NextReaction, and CompositionRejection
 Simon Frost
-2026-05-13
+2026-05-14
 
 - [Problem statement](#problem-statement)
 - [Setup](#setup)
@@ -81,7 +81,7 @@ R0_target = 2.0
 κ_excess = k - 1
 T_val    = R0_target / κ_excess
 τ_val    = T_val * γ_val / (1 - T_val)
-ε_val    = 0.01
+ε_val    = 0.001
 tmax     = 80.0
 nsims    = 80
 ens_seed = 20_240_502
@@ -93,7 +93,7 @@ tgrid = collect(0.0:save_dt:tmax)
         N, k, τ_val, γ_val, ε_val, nsims)
 ```
 
-    N=2000  k=4  τ=0.50  γ=0.25  ε=0.01  nsims=80
+    N=2000  k=4  τ=0.50  γ=0.25  ε=0.00  nsims=80
 
 ### Host graph
 
@@ -124,7 +124,7 @@ spec = OutbreakSpec(
 )
 ```
 
-    OutbreakSpec{StaticNetwork{SimpleGraph{Int64}}}(OutbreakModel([:S, :I], Bool[0, 1], OutbreakTransition[OutbreakTransition(:S, :I, 0.49999999999999994, :infection, Symbol[]), OutbreakTransition(:I, :S, 0.25, :spontaneous, Symbol[])], :SIS, Dict(:I => 2, :S => 1)), StaticNetwork{SimpleGraph{Int64}}(SimpleGraph{Int64}(4000, [[54, 196, 1172, 1889], [954, 1064, 1752, 1760], [61, 1350, 1662, 1961], [122, 330, 654, 887], [739, 967, 1482, 1649], [225, 312, 959, 1120], [199, 920, 1309, 1524], [724, 1064, 1099, 1431], [295, 701, 1033, 1398], [590, 1114, 1155, 1320]  …  [82, 383, 467, 764], [342, 1371, 1519, 1870], [954, 1111, 1181, 1680], [882, 1024, 1040, 1943], [60, 126, 858, 1681], [58, 594, 830, 1491], [232, 356, 428, 1882], [18, 476, 958, 1501], [273, 358, 1046, 1288], [221, 589, 1020, 1226]])), SeedFraction([:I => 0.01]), (0.0, 80.0))
+    OutbreakSpec{StaticNetwork{SimpleGraph{Int64}}}(OutbreakModel([:S, :I], Bool[0, 1], OutbreakTransition[OutbreakTransition(:S, :I, 0.49999999999999994, :infection, Symbol[]), OutbreakTransition(:I, :S, 0.25, :spontaneous, Symbol[])], :SIS, Dict(:I => 2, :S => 1)), StaticNetwork{SimpleGraph{Int64}}(SimpleGraph{Int64}(4000, [[54, 196, 1172, 1889], [954, 1064, 1752, 1760], [61, 1350, 1662, 1961], [122, 330, 654, 887], [739, 967, 1482, 1649], [225, 312, 959, 1120], [199, 920, 1309, 1524], [724, 1064, 1099, 1431], [295, 701, 1033, 1398], [590, 1114, 1155, 1320]  …  [82, 383, 467, 764], [342, 1371, 1519, 1870], [954, 1111, 1181, 1680], [882, 1024, 1040, 1943], [60, 126, 858, 1681], [58, 594, 830, 1491], [232, 356, 428, 1882], [18, 476, 958, 1501], [273, 358, 1046, 1288], [221, 589, 1020, 1226]])), SeedFraction([:I => 0.001]), (0.0, 80.0))
 
 ### Ensemble runs with timing
 
@@ -152,9 +152,9 @@ end
 
 
     Wall-clock times (80 sims × N=2000, parallel=true)
-      DirectSSA:            260.61 s
-      NextReaction:         5.58 s
-      CompositionRejection: 5.65 s
+      DirectSSA:            136.51 s
+      NextReaction:         3.48 s
+      CompositionRejection: 2.93 s
 
 ### Extract mean curves and standard deviations
 
@@ -184,25 +184,25 @@ end
 
     161-element Vector{Float64}:
      0.0
-     0.003178192852884573
-     0.005924067917926206
-     0.009805376657344942
-     0.014605128228455245
-     0.022025086387566038
-     0.03044809795871981
-     0.03958798684615884
-     0.04867532580036986
-     0.05348398220820979
+     0.0009852552197787464
+     0.0016845819824799868
+     0.0031482112662931613
+     0.004638851989965851
+     0.007387725022810353
+     0.011511139349079396
+     0.01779764842772668
+     0.02599780221358546
+     0.03694236016666429
      ⋮
-     0.007713829435303974
-     0.007845784161823728
-     0.007065580570446307
-     0.008177191186232747
-     0.008031149798665668
-     0.007436202817417782
-     0.00886177254606706
-     0.008594391661890601
-     0.007743474181855538
+     0.0087349305135158
+     0.008796843417608616
+     0.009879263220106642
+     0.008494748936470746
+     0.008073779642863618
+     0.008522937684399195
+     0.007352384332973001
+     0.0074269011545525275
+     0.007305751917219019
 
 ### Plot — mean prevalence ± 1σ
 
@@ -262,16 +262,16 @@ max_dev_CR = maximum(abs.(μ_direct_n .- μ_cr_n))
 
 
     === Algorithm agreement (max |μ_A - μ_B| / N) ===
-      Direct vs NextReaction:         0.00992
-      Direct vs CompositionRejection: 0.00864
+      Direct vs NextReaction:         0.02879
+      Direct vs CompositionRejection: 0.02626
       (threshold 0.05; both should be well below)
 
     === Wall-clock summary ===
-      DirectSSA:               260.61 s
-      NextReaction:            5.58 s
-      CompositionRejection:    5.65 s
-      Speed-up CR / Direct:   46.11×
-      Speed-up NR / Direct:   46.69×
+      DirectSSA:               136.51 s
+      NextReaction:            3.48 s
+      CompositionRejection:    2.93 s
+      Speed-up CR / Direct:   46.61×
+      Speed-up NR / Direct:   39.25×
 
 **Interpretation.** For a k = 4 regular graph with N = 2000 SIS dynamics
 all three algorithms produce statistically equivalent ensemble means —
@@ -298,7 +298,7 @@ k_tvn  = 4
 γ_tvn  = 0.25
 T_tvn  = R0_target / (k_tvn - 1)
 τ_tvn  = T_tvn * γ_tvn / (1 - T_tvn)
-ε_tvn  = 0.01
+ε_tvn  = 0.001
 tmax_tvn = 80.0
 nsims_tvn = 100
 seed_tvn  = 20_240_503
@@ -379,7 +379,7 @@ spec_static = OutbreakSpec(model   = model_tvn,
                            tspan   = (0.0, tmax_tvn))
 ```
 
-    OutbreakSpec{StaticNetwork{SimpleGraph{Int64}}}(OutbreakModel([:S, :I], Bool[0, 1], OutbreakTransition[OutbreakTransition(:S, :I, 0.49999999999999994, :infection, Symbol[]), OutbreakTransition(:I, :S, 0.25, :spontaneous, Symbol[])], :SIS, Dict(:I => 2, :S => 1)), StaticNetwork{SimpleGraph{Int64}}(SimpleGraph{Int64}(1000, [[161, 164, 347, 441], [26, 320, 348, 384], [32, 240, 419, 495], [44, 93, 232, 256], [42, 89, 357, 407], [120, 137, 448, 449], [8, 162, 225, 329], [7, 67, 158, 292], [13, 151, 172, 403], [225, 287, 296, 323]  …  [42, 55, 84, 489], [133, 183, 385, 409], [78, 165, 337, 404], [26, 184, 246, 305], [3, 217, 304, 396], [97, 105, 344, 349], [64, 65, 256, 314], [148, 371, 442, 464], [111, 178, 298, 318], [15, 223, 231, 315]])), SeedFraction([:I => 0.01]), (0.0, 80.0))
+    OutbreakSpec{StaticNetwork{SimpleGraph{Int64}}}(OutbreakModel([:S, :I], Bool[0, 1], OutbreakTransition[OutbreakTransition(:S, :I, 0.49999999999999994, :infection, Symbol[]), OutbreakTransition(:I, :S, 0.25, :spontaneous, Symbol[])], :SIS, Dict(:I => 2, :S => 1)), StaticNetwork{SimpleGraph{Int64}}(SimpleGraph{Int64}(1000, [[161, 164, 347, 441], [26, 320, 348, 384], [32, 240, 419, 495], [44, 93, 232, 256], [42, 89, 357, 407], [120, 137, 448, 449], [8, 162, 225, 329], [7, 67, 158, 292], [13, 151, 172, 403], [225, 287, 296, 323]  …  [42, 55, 84, 489], [133, 183, 385, 409], [78, 165, 337, 404], [26, 184, 246, 305], [3, 217, 304, 396], [97, 105, 344, 349], [64, 65, 256, 314], [148, 371, 442, 464], [111, 178, 298, 318], [15, 223, 231, 315]])), SeedFraction([:I => 0.001]), (0.0, 80.0))
 
 ### Run ensembles
 
@@ -399,26 +399,26 @@ _, μI_static = mean_curve(ens_static_tvn, :I; tgrid = tgrid_tvn)
 ```
 
     81-element Vector{Float64}:
-     0.01
-     0.03534
-     0.0868
-     0.189
-     0.3554
-     0.55708
-     0.72568
-     0.81604
-     0.85184
-     0.86736
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
      ⋮
-     0.86752
-     0.86624
-     0.8694
-     0.87042
-     0.8707
-     0.8706799999999999
-     0.8696
-     0.8699600000000001
-     0.8704
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
 
 ### Plot
 
@@ -466,8 +466,8 @@ mean_diff = mean(abs.(μI_tvn_n[idx_post:end] .- μI_static_n[idx_post:end]))
 
 
     === Rewiring effect ===
-      Max |Δprevalence| post-rewire:  0.0187
-      Mean |Δprevalence| post-rewire: 0.0118
+      Max |Δprevalence| post-rewire:  0.0000
+      Mean |Δprevalence| post-rewire: 0.0000
       R₀ = τk/γ = 8.00  (same before and after — degree-preserving)
 
 **Honest framing.** A random degree-preserving rewiring of a
