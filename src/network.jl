@@ -61,10 +61,64 @@ function TimeVaryingNetwork(graph::G, updates) where {G <: AbstractGraph}
     return TimeVaryingNetwork{G}(graph, typed)
 end
 
+"""
+    MultiplexNetwork{G<:AbstractGraph}
+
+A multiplex contact network: several layers (sub-graphs) over the same node
+set, each carrying its own per-edge transmission-rate multiplier. The
+infection hazard contributed by an infectious neighbour reached via layer
+`ℓ` is `tr.rate * layer_rates[ℓ]`, where `tr.rate` comes from the
+`OutbreakModel` infection transition.
+
+All layers must share the same number of nodes. Currently supported by
+`DirectSSA`; combining a `MultiplexNetwork` with `TimeVaryingNetwork`
+semantics or with `CompositionRejection` is not supported.
+
+# Example
+```julia
+households = erdos_renyi(N, 4 / N)
+schools    = erdos_renyi(N, 8 / N)
+net        = MultiplexNetwork([households, schools], [2.0, 1.0])
+spec       = OutbreakSpec(model, net, SeedFraction(0.01), (0.0, 40.0))
+```
+"""
+struct MultiplexNetwork{G <: AbstractGraph} <: AbstractContactNetwork
+    layers::Vector{G}
+    layer_rates::Vector{Float64}
+
+    function MultiplexNetwork{G}(layers::Vector{G},
+                                 layer_rates::Vector{Float64}) where {G <: AbstractGraph}
+        isempty(layers) && throw(ArgumentError("MultiplexNetwork requires at least one layer"))
+        length(layers) == length(layer_rates) ||
+            throw(ArgumentError("layers and layer_rates must have the same length"))
+        all(>=(0), layer_rates) ||
+            throw(ArgumentError("layer_rates must be non-negative"))
+        n = nv(layers[1])
+        all(g -> nv(g) == n, layers) ||
+            throw(ArgumentError("all layers must have the same number of nodes"))
+        return new{G}(layers, layer_rates)
+    end
+end
+
+function MultiplexNetwork(layers::AbstractVector{<:AbstractGraph},
+                          layer_rates::AbstractVector{<:Real})
+    G = typeof(layers[1])
+    layers_v = Vector{G}(undef, length(layers))
+    @inbounds for (i, g) in pairs(layers)
+        layers_v[i] = g
+    end
+    return MultiplexNetwork{G}(layers_v, Vector{Float64}(layer_rates))
+end
+
 # --- Graph interface delegation ---
 
 _outbreak_graph(n::AbstractContactNetwork) = n.graph
 _outbreak_graph(n::AbstractGraph)          = n          # safety fallback
+# For multiplex, the "primary" graph is the first layer (used only as a
+# convenient nv/edge-iteration target by callers that don't multiplex-aware).
+_outbreak_graph(n::MultiplexNetwork)       = n.layers[1]
 
 Graphs.nv(n::AbstractContactNetwork) = nv(n.graph)
 Graphs.ne(n::AbstractContactNetwork) = ne(n.graph)
+Graphs.nv(n::MultiplexNetwork) = nv(n.layers[1])
+Graphs.ne(n::MultiplexNetwork) = sum(ne, n.layers)

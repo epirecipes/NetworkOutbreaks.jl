@@ -17,24 +17,44 @@ struct DirectSSA <: OutbreakAlgorithm end
 function simulate(spec::OutbreakSpec;
                   algorithm::OutbreakAlgorithm = DirectSSA(),
                   seed::Integer = rand(UInt64),
-                  keep::Symbol = :counts)
+                  keep::Symbol = :counts,
+                  interventions::InterventionPlan = InterventionPlan())
     keep in (:counts, :events) ||
         throw(ArgumentError("keep must be :counts or :events"))
-    return _simulate_impl(algorithm, spec, UInt64(seed), keep)
+    if !isempty(interventions) && !(algorithm isa DirectSSA)
+        throw(ArgumentError("interventions are currently only supported with DirectSSA"))
+    end
+    return _simulate_impl(algorithm, spec, UInt64(seed), keep, interventions)
 end
 
-function _simulate_impl(::DirectSSA, spec::OutbreakSpec, seed::UInt64, keep::Symbol)
+function _simulate_impl(::DirectSSA, spec::OutbreakSpec, seed::UInt64, keep::Symbol,
+                        interventions::InterventionPlan = InterventionPlan())
     rng = Xoshiro(seed)
     model = spec.model
     network = spec.network
 
     # Time-varying network support
     is_tvn = network isa TimeVaryingNetwork
+    is_mpx = network isa MultiplexNetwork
+    is_tvn && is_mpx &&
+        throw(ArgumentError("MultiplexNetwork combined with TimeVaryingNetwork is not supported"))
     g = is_tvn ? deepcopy(network.graph) : _outbreak_graph(network)
     updates = is_tvn ? network.updates : nothing
     next_update_idx = 1
 
-    n = nv(g)
+    # Layer view: a vector of (graph, weight) pairs the SSA loops over when
+    # computing per-node infection hazards. For static / time-varying networks
+    # this is a 1-element view over `g` with weight 1.0; for multiplex networks
+    # each layer contributes its own neighbour set scaled by `layer_rates[ℓ]`.
+    if is_mpx
+        mpx_layers = network.layers
+        mpx_weights = network.layer_rates
+    else
+        mpx_layers = (g,)
+        mpx_weights = (1.0,)
+    end
+
+    n = nv(is_mpx ? network : g)
     C = ncompartments(model)
 
     node_state = initial_state(spec, rng)
@@ -47,7 +67,7 @@ function _simulate_impl(::DirectSSA, spec::OutbreakSpec, seed::UInt64, keep::Sym
         src_idx = model.index_of[tr.from]
         if tr.type == :spontaneous
             push!(spont_by_src[src_idx], tr)
-        else  # :infection
+        elseif tr.type in (:infection, :contact_trace)
             push!(infection_by_src[src_idx], tr)
         end
     end
@@ -85,11 +105,15 @@ function _simulate_impl(::DirectSSA, spec::OutbreakSpec, seed::UInt64, keep::Sym
     t_now = spec.tspan[1]
     t_end = spec.tspan[2]
 
-    # Reusable buffer for per-node infection-source counts.
-    # For each node v, count infectious neighbours partitioned by their
-    # compartment (so per-edge rates can multiply by the per-source-comp
-    # transition rate).
-    infectious_neighbour_counts = zeros(Int, C)
+    # Intervention tracking
+    next_sched_idx = 1
+    threshold_fired = falses(length(interventions.thresholds))
+
+    # Reusable buffer for per-node infection-source weights.
+    # For each node v, accumulate the layer-weighted count of infectious
+    # neighbours partitioned by their compartment, so per-edge rates can
+    # multiply by the per-source-comp transition rate.
+    infectious_neighbour_weight = zeros(Float64, C)
 
     while t_now < t_end
         # --- propensity sweep ---
@@ -105,9 +129,8 @@ function _simulate_impl(::DirectSSA, spec::OutbreakSpec, seed::UInt64, keep::Sym
         end
 
         # Infection part: for each susceptible-with-an-infection-rule node v
-        # and each of its infectious neighbours, add the transition's rate.
-        # We accumulate it into per-node hazards so we can sample which
-        # node is infected.
+        # and each of its infectious neighbours, add the transition's rate
+        # weighted by the per-layer multiplier (1.0 for non-multiplex).
         infection_node_hazard = zeros(Float64, n)  # only nonzero where applicable
         infection_rate_total  = 0.0
         if any(!isempty, infection_by_src)
@@ -115,29 +138,33 @@ function _simulate_impl(::DirectSSA, spec::OutbreakSpec, seed::UInt64, keep::Sym
                 src_idx = node_state[v]
                 trs = infection_by_src[src_idx]
                 isempty(trs) && continue
-                # Tally infectious neighbours by compartment
-                fill!(infectious_neighbour_counts, 0)
+                # Tally infectious neighbours by compartment, summed across
+                # layers and weighted by each layer's rate multiplier.
+                fill!(infectious_neighbour_weight, 0.0)
                 any_infectious = false
-                for u in neighbors(g, v)
-                    nc = node_state[u]
-                    if model.infectious[nc]
-                        infectious_neighbour_counts[nc] += 1
-                        any_infectious = true
+                for (l_idx, g_l) in pairs(mpx_layers)
+                    w_l = mpx_weights[l_idx]
+                    w_l > 0 || continue
+                    for u in neighbors(g_l, v)
+                        nc = node_state[u]
+                        if model.infectious[nc]
+                            infectious_neighbour_weight[nc] += w_l
+                            any_infectious = true
+                        end
                     end
                 end
                 any_infectious || continue
                 # Sum hazard contributions: for each infection transition
-                # `from → to` available at this source, add rate × #catalyst
-                # neighbours where catalysts are the compartments listed in
-                # `via` (or all infectious if `via` is empty).
+                # `from → to` available at this source, add rate × Σ-via
+                # weighted infectious neighbours.
                 hazard_v = 0.0
                 for tr in trs
                     mask = via_mask[tr]
-                    n_via = 0
+                    w_via = 0.0
                     for i in 1:C
-                        mask[i] && (n_via += infectious_neighbour_counts[i])
+                        mask[i] && (w_via += infectious_neighbour_weight[i])
                     end
-                    hazard_v += tr.rate * n_via
+                    hazard_v += tr.rate * w_via
                 end
                 infection_node_hazard[v] = hazard_v
                 infection_rate_total += hazard_v
@@ -169,6 +196,27 @@ function _simulate_impl(::DirectSSA, spec::OutbreakSpec, seed::UInt64, keep::Sym
                     next_update_idx += 1
                 end
                 continue  # re-enter loop: recompute total_rate with updated graph
+            end
+        end
+
+        # --- scheduled interventions: apply any that fire before t_next ---
+        if next_sched_idx <= length(interventions.scheduled)
+            iv = interventions.scheduled[next_sched_idx]
+            t_iv = _intervention_time(iv)
+            if t_iv <= t_next
+                t_now = min(t_iv, t_end)
+                t_now >= t_end && break
+                while next_sched_idx <= length(interventions.scheduled) &&
+                        _intervention_time(interventions.scheduled[next_sched_idx]) <= t_now
+                    _apply_intervention!(interventions.scheduled[next_sched_idx],
+                                         model, node_state, state, n,
+                                         spont_by_src, infection_by_src,
+                                         spont_total_rate, via_mask, rng)
+                    next_sched_idx += 1
+                end
+                push!(times_buf, t_now)
+                push!(counts_buf, copy(state.counts))
+                continue  # recompute propensities
             end
         end
 
@@ -233,18 +281,22 @@ function _simulate_impl(::DirectSSA, spec::OutbreakSpec, seed::UInt64, keep::Sym
             fired_tr = if length(trs) == 1
                 trs[1]
             else
-                fill!(infectious_neighbour_counts, 0)
-                for u2 in neighbors(g, picked_v)
-                    infectious_neighbour_counts[node_state[u2]] += 1
+                fill!(infectious_neighbour_weight, 0.0)
+                for (l_idx, g_l) in pairs(mpx_layers)
+                    w_l = mpx_weights[l_idx]
+                    w_l > 0 || continue
+                    for u2 in neighbors(g_l, picked_v)
+                        infectious_neighbour_weight[node_state[u2]] += w_l
+                    end
                 end
                 weights = Float64[]
                 for tr in trs
                     mask = via_mask[tr]
-                    n_via = 0
+                    w_via = 0.0
                     for i in 1:C
-                        mask[i] && (n_via += infectious_neighbour_counts[i])
+                        mask[i] && (w_via += infectious_neighbour_weight[i])
                     end
-                    push!(weights, tr.rate * n_via)
+                    push!(weights, tr.rate * w_via)
                 end
                 trs[sample(rng, 1:length(trs), Weights(weights))]
             end
@@ -268,6 +320,23 @@ function _simulate_impl(::DirectSSA, spec::OutbreakSpec, seed::UInt64, keep::Sym
                   OutbreakEvent(t_now,
                                 _transition_index(model, fired_tr),
                                 fired_node))
+        end
+
+        # --- threshold interventions: check after each event ---
+        for (ti, tiv) in enumerate(interventions.thresholds)
+            threshold_fired[ti] && continue
+            c_idx = model.index_of[tiv.compartment]
+            cnt = state.counts[c_idx]
+            triggered = (tiv.direction == :above && cnt >= tiv.threshold) ||
+                        (tiv.direction == :below && cnt <= tiv.threshold)
+            if triggered
+                threshold_fired[ti] = true
+                _apply_intervention!(tiv.action, model, node_state, state, n,
+                                     spont_by_src, infection_by_src,
+                                     spont_total_rate, via_mask, rng)
+                push!(times_buf, t_now)
+                push!(counts_buf, copy(state.counts))
+            end
         end
     end
 
@@ -317,4 +386,72 @@ function _last_nonzero(v::AbstractVector{<:Real})
         v[i] > 0 && return i
     end
     return 0
+end
+
+# --- intervention application ---
+
+function _apply_intervention!(iv::ScheduledRateChange, model, node_state, state, n,
+                               spont_by_src, infection_by_src, spont_total_rate,
+                               via_mask, rng)
+    from_idx = model.index_of[iv.from]
+    for (j, tr) in pairs(model.transitions)
+        if tr.from == iv.from && tr.to == iv.to && tr.type == iv.type
+            new_tr = OutbreakTransition(tr.from, tr.to, iv.new_rate, tr.type; via = tr.via)
+            model.transitions[j] = new_tr
+            # Update caches
+            if tr.type == :spontaneous
+                for (k, st) in pairs(spont_by_src[from_idx])
+                    if st === tr
+                        spont_by_src[from_idx][k] = new_tr
+                        break
+                    end
+                end
+                spont_total_rate[from_idx] = sum(t.rate for t in spont_by_src[from_idx]; init=0.0)
+            else
+                for (k, it) in pairs(infection_by_src[from_idx])
+                    if it === tr
+                        infection_by_src[from_idx][k] = new_tr
+                        # Update via_mask for the new transition
+                        delete!(via_mask, tr)
+                        mask = falses(length(model.compartments))
+                        if isempty(new_tr.via)
+                            for i in eachindex(model.infectious)
+                                model.infectious[i] && (mask[i] = true)
+                            end
+                        else
+                            for sym in new_tr.via
+                                mask[model.index_of[sym]] = true
+                            end
+                        end
+                        via_mask[new_tr] = mask
+                        break
+                    end
+                end
+            end
+            return
+        end
+    end
+end
+
+function _apply_intervention!(iv::ScheduledStateChange, model, node_state, state, n,
+                               spont_by_src, infection_by_src, spont_total_rate,
+                               via_mask, rng)
+    target_idx = model.index_of[iv.compartment]
+    n_to_move = round(Int, iv.fraction * n)
+    n_to_move <= 0 && return
+    # Collect eligible nodes (not already in target compartment)
+    eligible = Int[]
+    @inbounds for v in 1:n
+        node_state[v] != target_idx && push!(eligible, v)
+    end
+    n_to_move = min(n_to_move, length(eligible))
+    n_to_move <= 0 && return
+    # Shuffle and pick
+    selected = sample(rng, eligible, n_to_move; replace = false)
+    @inbounds for v in selected
+        old_idx = node_state[v]
+        node_state[v] = target_idx
+        state.counts[old_idx] -= 1
+        state.counts[target_idx] += 1
+    end
 end

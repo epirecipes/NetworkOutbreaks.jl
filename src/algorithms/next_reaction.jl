@@ -13,10 +13,13 @@ struct NextReaction <: OutbreakAlgorithm end
 const _SPONTANEOUS_CHANNEL = 1
 const _INFECTION_CHANNEL = 2
 
-function _simulate_impl(::NextReaction, spec::OutbreakSpec, seed::UInt64, keep::Symbol)
+function _simulate_impl(::NextReaction, spec::OutbreakSpec, seed::UInt64, keep::Symbol, interventions::InterventionPlan = InterventionPlan())
     rng = Xoshiro(seed)
     model = spec.model
     network = spec.network
+
+    network isa MultiplexNetwork &&
+        throw(ArgumentError("NextReaction does not yet support MultiplexNetwork; use DirectSSA"))
 
     # Time-varying network support
     is_tvn = network isa TimeVaryingNetwork

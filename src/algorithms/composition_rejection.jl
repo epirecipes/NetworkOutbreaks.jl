@@ -103,11 +103,15 @@ end
 # ---------------------------------------------------------------------------
 
 function _simulate_impl(::CompositionRejection, spec::OutbreakSpec,
-                        seed::UInt64, keep::Symbol)
+                        seed::UInt64, keep::Symbol,
+                        interventions::InterventionPlan = InterventionPlan())
     spec.network isa TimeVaryingNetwork &&
         throw(ArgumentError(
             "CompositionRejection does not yet support TimeVaryingNetwork. " *
             "Use DirectSSA or NextReaction for time-varying topologies."))
+    spec.network isa MultiplexNetwork &&
+        throw(ArgumentError(
+            "CompositionRejection does not yet support MultiplexNetwork; use DirectSSA"))
 
     rng   = Xoshiro(seed)
     model = spec.model

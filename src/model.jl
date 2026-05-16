@@ -21,9 +21,10 @@ struct OutbreakTransition
     from::Symbol
     to::Symbol
     rate::Float64
-    type::Symbol  # :infection | :spontaneous
+    type::Symbol  # :infection | :spontaneous | :contact_trace
     # For :infection: optional restriction on which infectious compartments
     # act as catalysts. Empty means "any infectious compartment".
+    # For :contact_trace: which compartments in neighbours trigger tracing.
     via::Vector{Symbol}
 end
 
@@ -54,7 +55,7 @@ function OutbreakModel(compartments::Vector{Symbol},
             throw(ArgumentError("unknown source compartment $(tr.from)"))
         haskey(index_of, tr.to)   ||
             throw(ArgumentError("unknown target compartment $(tr.to)"))
-        tr.type in (:infection, :spontaneous) ||
+        tr.type in (:infection, :spontaneous, :contact_trace) ||
             throw(ArgumentError("unknown transition type $(tr.type)"))
         tr.rate >= 0 ||
             throw(ArgumentError("transition rate must be non-negative; got $(tr.rate)"))

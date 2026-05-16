@@ -17,6 +17,7 @@ export
     AbstractContactNetwork,
     StaticNetwork,
     TimeVaryingNetwork,
+    MultiplexNetwork,
     # State / events / trajectory
     OutbreakState,
     OutbreakEvent,
@@ -39,10 +40,17 @@ export
     reinfection_histogram,
     final_size,
     mean_curve,
-    quantile_band
+    quantile_band,
+    # Interventions
+    AbstractIntervention,
+    ScheduledRateChange,
+    ScheduledStateChange,
+    ThresholdIntervention,
+    InterventionPlan
 
 include("model.jl")
 include("network.jl")
+include("interventions.jl")
 include("spec.jl")
 include("state.jl")
 include("events.jl")

@@ -123,10 +123,13 @@ end
 # Main simulation
 # ---------------------------------------------------------------------------
 
-function _simulate_impl(::HAS, spec::OutbreakSpec, seed::UInt64, keep::Symbol)
+function _simulate_impl(::HAS, spec::OutbreakSpec, seed::UInt64, keep::Symbol, interventions::InterventionPlan = InterventionPlan())
     rng     = Xoshiro(seed)
     model   = spec.model
     network = spec.network
+
+    network isa MultiplexNetwork &&
+        throw(ArgumentError("HAS does not yet support MultiplexNetwork; use DirectSSA"))
 
     # Time-varying network support (mirrors next_reaction.jl / direct.jl).
     is_tvn          = network isa TimeVaryingNetwork
