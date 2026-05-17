@@ -85,19 +85,15 @@ used.
 
 ## Release highlights
 
-This release makes `NetworkOutbreaks.jl` the stochastic companion for the
-edge- and node-based deterministic packages:
-
 - Four simulation algorithms: `DirectSSA`, `NextReaction`,
   `CompositionRejection`, and `HAS`.
-- `TimeVaryingNetwork` support in `DirectSSA`, `NextReaction`, and `HAS`;
-  `CompositionRejection` rejects time-varying topologies explicitly.
+- `TimeVaryingNetwork` and `MultiplexNetwork` support.
+- **Interventions**: `ScheduledRateChange`, `ScheduledStateChange` (vaccination
+  pulses), `ThresholdIntervention` (reactive policies) — processed by `DirectSSA`.
+- **Contact tracing**: `:contact_trace` transition type for rate-based
+  neighbour-dependent quarantine (preserves Gillespie correctness).
 - Threaded deterministic ensembles via `simulate_ensemble`.
-- Reinfection-counting analysis helpers and comparison vignettes.
-- Weak-dependency adapters from `EdgeBasedModels.DiseaseProgression` and
-  `NodeBasedModels.CompartmentalModel` into `OutbreakModel`.
-- Event logs now distinguish `via`-specific infection transitions, and HAS /
-  CompositionRejection include robustness fixes for low-probability edge cases.
+- Weak-dependency adapters from `EdgeBasedModels` and `NodeBasedModels`.
 
 ## License
 
