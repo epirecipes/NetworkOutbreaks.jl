@@ -23,14 +23,16 @@ function simulate_ensemble(spec::OutbreakSpec;
                            seed::Integer = rand(UInt64),
                            algorithm::OutbreakAlgorithm = DirectSSA(),
                            keep::Symbol = :counts,
-                           parallel::Bool = false)
+                           parallel::Bool = false,
+                           interventions::InterventionPlan = InterventionPlan())
     nsims >= 1 || throw(ArgumentError("nsims must be ≥ 1"))
     parent_seed = UInt64(seed)
     sub_seeds = [_ensemble_child_seed(parent_seed, k) for k in 1:nsims]
     trajs = Vector{OutbreakTrajectory}(undef, nsims)
     if parallel
         tasks = [Threads.@spawn simulate(spec; algorithm = algorithm,
-                                         seed = sub_seeds[k], keep = keep)
+                                         seed = sub_seeds[k], keep = keep,
+                                          interventions = interventions)
                  for k in 1:nsims]
         for k in 1:nsims
             trajs[k] = fetch(tasks[k])
@@ -38,7 +40,8 @@ function simulate_ensemble(spec::OutbreakSpec;
     else
         for k in 1:nsims
             trajs[k] = simulate(spec; algorithm = algorithm,
-                                seed = sub_seeds[k], keep = keep)
+                                seed = sub_seeds[k], keep = keep,
+                                          interventions = interventions)
         end
     end
     return OutbreakEnsemble(spec, trajs)

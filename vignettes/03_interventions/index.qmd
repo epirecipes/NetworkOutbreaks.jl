@@ -1,0 +1,98 @@
+---
+title: "Interventions: Vaccination Pulse"
+author: "Simon Frost"
+date: today
+subtitle: "NetworkOutbreaks.jl Vignette 03"
+engine: julia
+julia:
+  project: ".."
+---
+
+## Introduction
+
+NetworkOutbreaks.jl supports **scheduled interventions** that modify
+the simulation mid-run. This vignette demonstrates a vaccination pulse
+using `ScheduledStateChange`: at a specified time, a fraction of the
+population is moved from susceptible (S) to vaccinated (V).
+
+## Setup
+
+```{julia}
+using NetworkOutbreaks
+using Graphs
+using StableRNGs
+using Statistics
+using Plots
+```
+
+## Model with vaccination compartment
+
+We define an SIRV model: S → I → R (standard SIR) plus a V
+compartment that vaccination moves susceptibles into.
+
+```{julia}
+sirv = OutbreakModel(
+    [:S, :I, :R, :V],
+    [false, true, false, false],
+    [OutbreakTransition(:S, :I, 1/6, :infection; via = [:I]),
+     OutbreakTransition(:I, :R, 0.25, :spontaneous)];
+    name = :SIRV)
+```
+
+## Baseline: no intervention
+
+```{julia}
+N = 1000
+g = erdos_renyi(N, 5 / (N - 1); rng = StableRNG(42))
+
+spec = OutbreakSpec(model = sirv, network = g,
+    initial = SeedFraction(:I => 0.01),
+    tspan = (0.0, 40.0))
+
+ens_base = simulate_ensemble(spec; nsims = 200, seed = 1, parallel = true)
+t_base, μ_base = mean_curve(ens_base, :I)
+```
+
+## Vaccination pulse at t = 5
+
+We vaccinate 30% of the population at t = 5:
+
+```{julia}
+plan = InterventionPlan([
+    ScheduledStateChange(5.0, :V, 0.30),
+])
+
+ens_vax = simulate_ensemble(spec; nsims = 200, seed = 1,
+    parallel = false, interventions = plan)
+t_vax, μ_vax = mean_curve(ens_vax, :I)
+```
+
+```{julia}
+#| label: fig-vaccination-pulse
+#| fig-cap: "SIR epidemic on ER(1000, 5) with and without a 30% vaccination pulse at t=5."
+plot(t_base, μ_base ./ N, label = "No intervention", lw = 2, color = :red,
+     xlabel = "Time", ylabel = "Infected fraction",
+     title = "Vaccination pulse at t=5 (30% coverage)")
+plot!(t_vax, μ_vax ./ N, label = "30% vaccinated at t=5", lw = 2, color = :blue)
+```
+
+## Varying vaccination timing
+
+```{julia}
+#| label: fig-vaccination-timing
+#| fig-cap: "Earlier vaccination is more effective at reducing the epidemic peak."
+p = plot(t_base, μ_base ./ N, label = "No vax", lw = 2, color = :grey,
+         xlabel = "Time", ylabel = "Infected fraction",
+         title = "Vaccination timing (30% coverage)")
+for (t_v, col) in [(2.0, :green), (5.0, :blue), (10.0, :orange), (15.0, :red)]
+    plan_t = InterventionPlan([ScheduledStateChange(t_v, :V, 0.30)])
+    ens_t = simulate_ensemble(spec; nsims = 200, seed = 1,
+        parallel = false, interventions = plan_t)
+    _, μ_t = mean_curve(ens_t, :I)
+    plot!(p, t_base[1:length(μ_t)], μ_t ./ N,
+          label = "Vax at t=$(Int(t_v))", lw = 2, color = col)
+end
+p
+```
+
+Earlier vaccination is far more effective.

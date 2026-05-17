@@ -1,36 +1,58 @@
----
-title: "Algorithm Comparison: DirectSSA, NextReaction, and CompositionRejection"
-author: "Simon Frost"
-date: today
-subtitle: "NetworkOutbreaks.jl Vignette 02 — Phase 3 algorithm benchmarking"
----
+# Algorithm Comparison: DirectSSA, NextReaction, and CompositionRejection
+Simon Frost
+2026-05-14
+
+- [Problem statement](#problem-statement)
+- [Setup](#setup)
+- [Part 1 — Algorithm equivalence at moderate
+  scale](#part-1--algorithm-equivalence-at-moderate-scale)
+  - [Parameters](#parameters)
+  - [Host graph](#host-graph)
+  - [Model](#model)
+  - [Ensemble runs with timing](#ensemble-runs-with-timing)
+  - [Extract mean curves and standard
+    deviations](#extract-mean-curves-and-standard-deviations)
+  - [Plot — mean prevalence ± 1σ](#plot--mean-prevalence--1σ)
+  - [Headline numbers](#headline-numbers)
+- [Part 2 — Time-varying network
+  demo](#part-2--time-varying-network-demo)
+  - [Build the time-varying spec](#build-the-time-varying-spec)
+  - [Build the rewiring update list](#build-the-rewiring-update-list)
+  - [Specs](#specs)
+  - [Run ensembles](#run-ensembles)
+  - [Plot](#plot)
+  - [Honest assessment](#honest-assessment)
+- [Reproducibility](#reproducibility)
+- [HAS (Hierarchical Adaptive
+  Sampling)](#has-hierarchical-adaptive-sampling)
 
 ## Problem statement
 
 Phase 3 adds two new stochastic simulation algorithms — **NextReaction**
-(Gibson–Bruck, 2000) and **CompositionRejection** (Slepoy *et al.*, 2008) —
-alongside the reference **DirectSSA** (Gillespie, 1977).  All three are exact
-continuous-time Markov chain samplers; they differ only in how they maintain
-and query the rate structure, which determines per-event computational cost:
+(Gibson–Bruck, 2000) and **CompositionRejection** (Slepoy *et al.*,
+2008) — alongside the reference **DirectSSA** (Gillespie, 1977). All
+three are exact continuous-time Markov chain samplers; they differ only
+in how they maintain and query the rate structure, which determines
+per-event computational cost:
 
 | Algorithm | Per-event cost | Data structure |
-|---|---|---|
+|----|----|----|
 | `DirectSSA` | O(N) | flat rate sweep |
 | `NextReaction` | O(log N) | priority queue (min-heap) |
 | `CompositionRejection` | O(Δ log(a_max/a_min)) ≈ O(1) for fixed-degree | logarithmic buckets + rejection |
 
-This vignette validates that all three algorithms **produce statistically
-indistinguishable results** on the same SIS problem, and benchmarks their
-wall-clock times at a moderate scale (N = 2000) where the differences are
-meaningful.
+This vignette validates that all three algorithms **produce
+statistically indistinguishable results** on the same SIS problem, and
+benchmarks their wall-clock times at a moderate scale (N = 2000) where
+the differences are meaningful.
 
-We also demonstrate `TimeVaryingNetwork` support: a contact-rewiring scenario
-where 20 % of edges are shuffled at t = 10 and we compare the resulting
-prevalence trajectory to a static-graph control.
+We also demonstrate `TimeVaryingNetwork` support: a contact-rewiring
+scenario where 20 % of edges are shuffled at t = 10 and we compare the
+resulting prevalence trajectory to a static-graph control.
 
 ## Setup
 
-```{julia}
+``` julia
 using NetworkOutbreaks
 using Graphs
 using Plots
@@ -45,11 +67,13 @@ using Printf
 
 ### Parameters
 
-::: {.callout-note}
-**$R_0=2$ anchor.** For the $k=4$ regular network, $T=2/(k-1)=2/3$ and with $\gamma=0.25$ the stochastic per-edge rate is $\tau=0.5$. Algorithm comparisons use this shared disease process.
-:::
+> [!NOTE]
+>
+> **$R_0=2$ anchor.** For the $k=4$ regular network, $T=2/(k-1)=2/3$ and
+> with $\gamma=0.25$ the stochastic per-edge rate is $\tau=0.5$.
+> Algorithm comparisons use this shared disease process.
 
-```{julia}
+``` julia
 N        = 2000
 k        = 4
 γ_val    = 0.25
@@ -69,17 +93,21 @@ tgrid = collect(0.0:save_dt:tmax)
         N, k, τ_val, γ_val, ε_val, nsims)
 ```
 
+    N=2000  k=4  τ=0.50  γ=0.25  ε=0.00  nsims=80
+
 ### Host graph
 
-```{julia}
+``` julia
 rng_graph = StableRNG(20240502)
 g_main = random_regular_graph(N, k; rng = rng_graph)
 @printf("Graph: N=%d  k=%d  edges=%d\n", nv(g_main), k, ne(g_main))
 ```
 
+    Graph: N=2000  k=4  edges=4000
+
 ### Model
 
-```{julia}
+``` julia
 comps   = [:S, :I]
 inf_vec = [false, true]
 trs     = [
@@ -96,9 +124,11 @@ spec = OutbreakSpec(
 )
 ```
 
+    OutbreakSpec{StaticNetwork{SimpleGraph{Int64}}}(OutbreakModel([:S, :I], Bool[0, 1], OutbreakTransition[OutbreakTransition(:S, :I, 0.49999999999999994, :infection, Symbol[]), OutbreakTransition(:I, :S, 0.25, :spontaneous, Symbol[])], :SIS, Dict(:I => 2, :S => 1)), StaticNetwork{SimpleGraph{Int64}}(SimpleGraph{Int64}(4000, [[54, 196, 1172, 1889], [954, 1064, 1752, 1760], [61, 1350, 1662, 1961], [122, 330, 654, 887], [739, 967, 1482, 1649], [225, 312, 959, 1120], [199, 920, 1309, 1524], [724, 1064, 1099, 1431], [295, 701, 1033, 1398], [590, 1114, 1155, 1320]  …  [82, 383, 467, 764], [342, 1371, 1519, 1870], [954, 1111, 1181, 1680], [882, 1024, 1040, 1943], [60, 126, 858, 1681], [58, 594, 830, 1491], [232, 356, 428, 1882], [18, 476, 958, 1501], [273, 358, 1046, 1288], [221, 589, 1020, 1226]])), SeedFraction([:I => 0.001]), (0.0, 80.0))
+
 ### Ensemble runs with timing
 
-```{julia}
+``` julia
 t_direct = @elapsed begin
     ens_direct = simulate_ensemble(spec; nsims = nsims, seed = ens_seed,
                                    algorithm = DirectSSA(), parallel = true)
@@ -120,9 +150,15 @@ end
 @printf("  CompositionRejection: %.2f s\n", t_cr)
 ```
 
+
+    Wall-clock times (80 sims × N=2000, parallel=true)
+      DirectSSA:            136.51 s
+      NextReaction:         3.48 s
+      CompositionRejection: 2.93 s
+
 ### Extract mean curves and standard deviations
 
-```{julia}
+``` julia
 _, μ_direct = mean_curve(ens_direct, :I; tgrid = tgrid)
 _, μ_next   = mean_curve(ens_next,   :I; tgrid = tgrid)
 _, μ_cr     = mean_curve(ens_cr,     :I; tgrid = tgrid)
@@ -146,9 +182,31 @@ end
 σ_cr_n     = σ_cr     ./ N
 ```
 
+    161-element Vector{Float64}:
+     0.0
+     0.0009852552197787464
+     0.0016845819824799868
+     0.0031482112662931613
+     0.004638851989965851
+     0.007387725022810353
+     0.011511139349079396
+     0.01779764842772668
+     0.02599780221358546
+     0.03694236016666429
+     ⋮
+     0.0087349305135158
+     0.008796843417608616
+     0.009879263220106642
+     0.008494748936470746
+     0.008073779642863618
+     0.008522937684399195
+     0.007352384332973001
+     0.0074269011545525275
+     0.007305751917219019
+
 ### Plot — mean prevalence ± 1σ
 
-```{julia}
+``` julia
 plt1 = plot(tgrid, μ_direct_n;
             ribbon    = σ_direct_n,
             fillalpha = 0.15,
@@ -179,9 +237,11 @@ plot!(plt1, tgrid, μ_cr_n;
 plt1
 ```
 
+![](index_files/figure-commonmark/cell-8-output-1.svg)
+
 ### Headline numbers
 
-```{julia}
+``` julia
 max_dev_NR = maximum(abs.(μ_direct_n .- μ_next_n))
 max_dev_CR = maximum(abs.(μ_direct_n .- μ_cr_n))
 
@@ -200,26 +260,39 @@ max_dev_CR = maximum(abs.(μ_direct_n .- μ_cr_n))
         t_direct / max(t_next, 1e-6))
 ```
 
-**Interpretation.** For a k = 4 regular graph with N = 2000 SIS dynamics all
-three algorithms produce statistically equivalent ensemble means — as expected
-for exact samplers.  Wall-clock time typically orders
-`CompositionRejection` < `NextReaction` < `DirectSSA` at this scale because
-bucket-maintenance overhead is lower than heap overhead at moderate N and
-the all-rates sweep in DirectSSA is O(N) per event.
 
----
+    === Algorithm agreement (max |μ_A - μ_B| / N) ===
+      Direct vs NextReaction:         0.02879
+      Direct vs CompositionRejection: 0.02626
+      (threshold 0.05; both should be well below)
+
+    === Wall-clock summary ===
+      DirectSSA:               136.51 s
+      NextReaction:            3.48 s
+      CompositionRejection:    2.93 s
+      Speed-up CR / Direct:   46.61×
+      Speed-up NR / Direct:   39.25×
+
+**Interpretation.** For a k = 4 regular graph with N = 2000 SIS dynamics
+all three algorithms produce statistically equivalent ensemble means —
+as expected for exact samplers. Wall-clock time typically orders
+`CompositionRejection` \< `NextReaction` \< `DirectSSA` at this scale
+because bucket-maintenance overhead is lower than heap overhead at
+moderate N and the all-rates sweep in DirectSSA is O(N) per event.
+
+------------------------------------------------------------------------
 
 ## Part 2 — Time-varying network demo
 
-We explore what happens when 20 % of edges are rewired at time t = 10.  The
-rewiring is a **random degree-preserving shuffle**: we remove 20 % of existing
-edges and add the same number of new edges sampled uniformly at random from
-non-edges.  This preserves the degree distribution and therefore preserves
-the anchored regular-network $R_0=T(k-1)$.
+We explore what happens when 20 % of edges are rewired at time t = 10.
+The rewiring is a **random degree-preserving shuffle**: we remove 20 %
+of existing edges and add the same number of new edges sampled uniformly
+at random from non-edges. This preserves the degree distribution and
+therefore preserves the anchored regular-network $R_0=T(k-1)$.
 
 ### Build the time-varying spec
 
-```{julia}
+``` julia
 N_tvn  = 500
 k_tvn  = 4
 γ_tvn  = 0.25
@@ -237,9 +310,11 @@ g_base  = random_regular_graph(N_tvn, k_tvn; rng = rng_tvn)
         nv(g_base), k_tvn, ne(g_base))
 ```
 
+    TVN graph: N=500  k=4  edges=1000
+
 ### Build the rewiring update list
 
-```{julia}
+``` julia
 rng_rew  = StableRNG(seed_tvn + 1)
 t_rewire = 10.0
 
@@ -280,9 +355,11 @@ for (u, v) in new_edges
 end
 ```
 
+    Rewire: removing 200 edges, adding 200 at t=10.0
+
 ### Specs
 
-```{julia}
+``` julia
 tvn_network = TimeVaryingNetwork(deepcopy(g_base), raw_updates)
 
 comps_tvn   = [:S, :I]
@@ -302,9 +379,11 @@ spec_static = OutbreakSpec(model   = model_tvn,
                            tspan   = (0.0, tmax_tvn))
 ```
 
+    OutbreakSpec{StaticNetwork{SimpleGraph{Int64}}}(OutbreakModel([:S, :I], Bool[0, 1], OutbreakTransition[OutbreakTransition(:S, :I, 0.49999999999999994, :infection, Symbol[]), OutbreakTransition(:I, :S, 0.25, :spontaneous, Symbol[])], :SIS, Dict(:I => 2, :S => 1)), StaticNetwork{SimpleGraph{Int64}}(SimpleGraph{Int64}(1000, [[161, 164, 347, 441], [26, 320, 348, 384], [32, 240, 419, 495], [44, 93, 232, 256], [42, 89, 357, 407], [120, 137, 448, 449], [8, 162, 225, 329], [7, 67, 158, 292], [13, 151, 172, 403], [225, 287, 296, 323]  …  [42, 55, 84, 489], [133, 183, 385, 409], [78, 165, 337, 404], [26, 184, 246, 305], [3, 217, 304, 396], [97, 105, 344, 349], [64, 65, 256, 314], [148, 371, 442, 464], [111, 178, 298, 318], [15, 223, 231, 315]])), SeedFraction([:I => 0.001]), (0.0, 80.0))
+
 ### Run ensembles
 
-```{julia}
+``` julia
 tgrid_tvn = collect(0.0:1.0:tmax_tvn)
 
 ens_tvn = simulate_ensemble(spec_tvn;    nsims = nsims_tvn, seed = seed_tvn + 10,
@@ -319,9 +398,31 @@ _, μI_static = mean_curve(ens_static_tvn, :I; tgrid = tgrid_tvn)
 μI_static_n = μI_static ./ N_tvn
 ```
 
+    81-element Vector{Float64}:
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+     ⋮
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+     0.0
+
 ### Plot
 
-```{julia}
+``` julia
 plt2 = plot(tgrid_tvn, μI_tvn_n;
             lw     = 2.5,
             color  = :royalblue,
@@ -346,9 +447,11 @@ vline!(plt2, [t_rewire];
 plt2
 ```
 
+![](index_files/figure-commonmark/cell-14-output-1.svg)
+
 ### Honest assessment
 
-```{julia}
+``` julia
 # Max difference post-rewire
 idx_post = findfirst(t -> t >= t_rewire, tgrid_tvn)
 max_diff = maximum(abs.(μI_tvn_n[idx_post:end] .- μI_static_n[idx_post:end]))
@@ -361,25 +464,32 @@ mean_diff = mean(abs.(μI_tvn_n[idx_post:end] .- μI_static_n[idx_post:end]))
         τ_tvn * k_tvn / γ_tvn)
 ```
 
-**Honest framing.**  A random degree-preserving rewiring of a near-regular
-graph in the SIS endemic regime does not materially alter the long-run
-prevalence because R₀ = τk/γ is approximately preserved.  The transient
-immediately after the rewire may show a small perturbation as the correlation
-structure is disrupted and then re-established, but the endemic fixed point is
-essentially unchanged.  This is the expected and scientifically correct
-result; we include it to demonstrate that the `TimeVaryingNetwork` machinery
-works correctly (matching the static control when it should) rather than to
-manufacture an artificial visual difference.
+
+    === Rewiring effect ===
+      Max |Δprevalence| post-rewire:  0.0000
+      Mean |Δprevalence| post-rewire: 0.0000
+      R₀ = τk/γ = 8.00  (same before and after — degree-preserving)
+
+**Honest framing.** A random degree-preserving rewiring of a
+near-regular graph in the SIS endemic regime does not materially alter
+the long-run prevalence because R₀ = τk/γ is approximately preserved.
+The transient immediately after the rewire may show a small perturbation
+as the correlation structure is disrupted and then re-established, but
+the endemic fixed point is essentially unchanged. This is the expected
+and scientifically correct result; we include it to demonstrate that the
+`TimeVaryingNetwork` machinery works correctly (matching the static
+control when it should) rather than to manufacture an artificial visual
+difference.
 
 To observe a large effect one could use a disconnected topology (two
-components bridged at t = 10) or rewire during the initial transient phase
-(t < 5) rather than in the endemic regime.
+components bridged at t = 10) or rewire during the initial transient
+phase (t \< 5) rather than in the endemic regime.
 
----
+------------------------------------------------------------------------
 
 ## Reproducibility
 
-```{julia}
+``` julia
 @printf("\n=== Reproducibility ===\n")
 @printf("Main graph seed:        StableRNG(20240502)\n")
 @printf("DirectSSA ensemble:     %d runs, seed=%d, parallel=true\n",
@@ -393,22 +503,33 @@ components bridged at t = 10) or rewire during the initial transient phase
 @printf("NetworkOutbreaks:       %s\n", pathof(NetworkOutbreaks))
 ```
 
----
+
+    === Reproducibility ===
+    Main graph seed:        StableRNG(20240502)
+    DirectSSA ensemble:     80 runs, seed=20240502, parallel=true
+    NextReaction ensemble:  80 runs, seed=20240503, parallel=true
+    CR ensemble:            80 runs, seed=20240504, parallel=true
+    TVN graph seed:         StableRNG(20240503)
+    Julia version:          1.12.5
+    NetworkOutbreaks:       /Users/sdwfrost/Projects/edgebasedmodels/NetworkOutbreaks.jl/src/NetworkOutbreaks.jl
+
+------------------------------------------------------------------------
 
 ## HAS (Hierarchical Adaptive Sampling)
 
 `HAS` is now fully implemented and can be dropped into any comparison
-harness in place of `DirectSSA`, `NextReaction`, or `CompositionRejection`.
-It maintains per-node hazards in a complete binary sum tree so that event
-selection costs O(log N) deterministically, regardless of rate
-heterogeneity.  For large or degree-heterogeneous networks (e.g. power-law)
-where `CompositionRejection`'s O(1)-amortised guarantee weakens, `HAS`
-is the preferred choice.
+harness in place of `DirectSSA`, `NextReaction`, or
+`CompositionRejection`. It maintains per-node hazards in a complete
+binary sum tree so that event selection costs O(log N)
+deterministically, regardless of rate heterogeneity. For large or
+degree-heterogeneous networks (e.g. power-law) where
+`CompositionRejection`’s O(1)-amortised guarantee weakens, `HAS` is the
+preferred choice.
 
 To run the three-algorithm comparison above with `HAS` included, add a
 fourth ensemble call:
 
-```julia
+``` julia
 ens_has = simulate_ensemble(spec; nsims = nsims, seed = ens_seed + 3,
                             algorithm = HAS(), parallel = true)
 _, μ_has = mean_curve(ens_has, :I; tgrid = tgrid)
@@ -417,4 +538,3 @@ _, μ_has = mean_curve(ens_has, :I; tgrid = tgrid)
 `HAS` also accepts a `TimeVaryingNetwork`; edge updates trigger O(log N)
 tree refreshes for the two endpoint nodes, and the algorithm naturally
 redraws the next waiting time from the updated total rate.
-

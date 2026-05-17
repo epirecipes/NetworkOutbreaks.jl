@@ -1,0 +1,124 @@
+---
+title: "Contact Tracing"
+author: "Simon Frost"
+date: today
+subtitle: "NetworkOutbreaks.jl Vignette 04"
+engine: julia
+julia:
+  project: ".."
+---
+
+## Introduction
+
+Contact tracing quarantines the contacts of detected infectious
+individuals. NetworkOutbreaks.jl models this using `:contact_trace`
+transitions — a rate-based neighbour-dependent mechanism that preserves
+Gillespie correctness by treating each quarantine as an elementary SSA event.
+
+## Setup
+
+```{julia}
+using NetworkOutbreaks
+using Graphs
+using StableRNGs
+using Statistics
+using Plots
+```
+
+## SIRQ model with contact tracing
+
+Susceptible individuals are quarantined (S → Q) at a rate proportional
+to the number of infectious neighbours they have. The `via` keyword
+specifies which compartments trigger the tracing:
+
+```{julia}
+sirq = OutbreakModel(
+    [:S, :I, :R, :Q],
+    [false, true, false, false],
+    [OutbreakTransition(:S, :I, 1/6, :infection; via = [:I]),
+     OutbreakTransition(:I, :R, 0.25, :spontaneous),
+     OutbreakTransition(:S, :Q, 0.1, :contact_trace; via = [:I])];
+    name = :SIRQ)
+```
+
+The `:contact_trace` transition `S → Q` fires at rate 0.1 per
+(S-node, I-neighbour) pair — the same edge-counting mechanism as
+`:infection`, but moving the susceptible to quarantine instead of
+infecting them. This models imperfect tracing: only a fraction of
+contacts are traced per unit time.
+
+## Baseline SIR (no tracing)
+
+```{julia}
+N = 1000
+g = erdos_renyi(N, 5 / (N - 1); rng = StableRNG(42))
+
+sir = OutbreakModel([:S, :I, :R], [false, true, false],
+    [OutbreakTransition(:S, :I, 1/6, :infection; via = [:I]),
+     OutbreakTransition(:I, :R, 0.25, :spontaneous)]; name = :SIR)
+
+spec_sir = OutbreakSpec(model = sir, network = g,
+    initial = SeedFraction(:I => 0.01), tspan = (0.0, 40.0))
+ens_sir = simulate_ensemble(spec_sir; nsims = 200, seed = 1, parallel = false)
+t_sir, μ_sir = mean_curve(ens_sir, :I)
+```
+
+## With contact tracing
+
+```{julia}
+spec_ct = OutbreakSpec(model = sirq, network = g,
+    initial = SeedFraction(:I => 0.01), tspan = (0.0, 40.0))
+ens_ct = simulate_ensemble(spec_ct; nsims = 200, seed = 1, parallel = false)
+t_ct, μ_ct = mean_curve(ens_ct, :I)
+_, μ_Q = mean_curve(ens_ct, :Q)
+```
+
+```{julia}
+#| label: fig-contact-tracing
+#| fig-cap: "SIR epidemic with and without contact tracing (quarantine rate 0.1 per I-neighbour)."
+plot(t_sir, μ_sir ./ N, label = "No tracing", lw = 2, color = :red,
+     xlabel = "Time", ylabel = "Fraction",
+     title = "Contact tracing: S→Q at rate 0.1 per I-neighbour")
+plot!(t_ct, μ_ct ./ N, label = "I (with tracing)", lw = 2, color = :blue)
+plot!(t_ct, μ_Q ./ N, label = "Q (quarantined)", lw = 2, ls = :dash, color = :purple)
+```
+
+Contact tracing reduces the peak by quarantining susceptible contacts
+before they can be infected. The quarantined fraction Q grows as the
+epidemic progresses.
+
+## Varying tracing intensity
+
+```{julia}
+#| label: fig-tracing-intensity
+#| fig-cap: "Higher tracing rates (α) reduce the epidemic more effectively."
+p = plot(t_sir, μ_sir ./ N, label = "No tracing", lw = 2, color = :grey,
+         xlabel = "Time", ylabel = "Infected fraction",
+         title = "Contact tracing intensity")
+for (α, col) in [(0.05, :orange), (0.1, :blue), (0.2, :green), (0.5, :purple)]
+    m = OutbreakModel([:S, :I, :R, :Q], [false, true, false, false],
+        [OutbreakTransition(:S, :I, 1/6, :infection; via = [:I]),
+         OutbreakTransition(:I, :R, 0.25, :spontaneous),
+         OutbreakTransition(:S, :Q, α, :contact_trace; via = [:I])]; name = :SIRQ)
+    spec = OutbreakSpec(model = m, network = g,
+        initial = SeedFraction(:I => 0.01), tspan = (0.0, 40.0))
+    ens = simulate_ensemble(spec; nsims = 200, seed = 1, parallel = false)
+    _, μ = mean_curve(ens, :I)
+    plot!(p, t_sir[1:length(μ)], μ ./ N,
+          label = "α=$α", lw = 2, color = col)
+end
+p
+```
+
+Higher tracing rates suppress the epidemic more effectively. At α=0.5
+(tracing rate 3× the transmission rate), the epidemic is nearly
+eliminated.
+
+## Summary
+
+- `:contact_trace` transitions provide rate-based contact tracing
+  within the Gillespie SSA framework.
+- Each quarantine is an elementary SSA event — no batch state changes.
+- The `via` keyword controls which compartments trigger tracing.
+- Tracing intensity (rate α) determines effectiveness: α ≈ β
+  substantially reduces the epidemic.

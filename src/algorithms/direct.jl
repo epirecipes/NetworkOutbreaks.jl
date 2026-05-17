@@ -82,7 +82,7 @@ function _simulate_impl(::DirectSSA, spec::OutbreakSpec, seed::UInt64, keep::Sym
     # which compartments count as catalysts. Empty `via` ⇒ all infectious.
     via_mask = Dict{OutbreakTransition, BitVector}()
     for tr in model.transitions
-        tr.type == :infection || continue
+        tr.type in (:infection, :contact_trace) || continue
         mask = falses(C)
         if isempty(tr.via)
             for i in 1:C

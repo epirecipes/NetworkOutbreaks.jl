@@ -17,6 +17,14 @@ format:
     code-fold: false
     theme: cosmo
     embed-resources: true
+  pdf:
+    pdf-engine: xelatex
+    mainfont: "STIX Two Text"
+    mathfont: "STIX Two Math"
+    monofont: "Fira Code"
+    toc: true
+  gfm:
+    toc: true
 
 julia:
   project: "."
