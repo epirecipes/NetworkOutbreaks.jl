@@ -458,6 +458,51 @@ using Statistics: mean
     end
 
     # -----------------------------------------------------------------------
+    @testset "MultiplexNetwork (DirectSSA)" begin
+        comps = [:S, :I, :R]
+        inf   = [false, true, false]
+        trs   = [OutbreakTransition(:S, :I, 0.3, :infection; via=[:I]),
+                 OutbreakTransition(:I, :R, 0.2, :spontaneous)]
+        model = OutbreakModel(comps, inf, trs; name = :SIR)
+        N = 400
+        g1 = erdos_renyi(N, 4/N, rng=StableRNG(101))
+        g2 = erdos_renyi(N, 4/N, rng=StableRNG(102))
+        seed = SeedFraction(:I => 0.02)
+        tspan = (0.0, 25.0)
+
+        # Single-layer multiplex with weight 1 ≡ static graph
+        spec_single = OutbreakSpec(; model, network=MultiplexNetwork([g1], [1.0]),
+                                   initial=seed, tspan)
+        spec_static = OutbreakSpec(; model, network=g1, initial=seed, tspan)
+        ens_m = simulate_ensemble(spec_single; nsims=30, seed=11, algorithm=DirectSSA())
+        ens_s = simulate_ensemble(spec_static; nsims=30, seed=11, algorithm=DirectSSA())
+        finalR_m = mean(compartment_series(s, :R)[end] for s in ens_m)
+        finalR_s = mean(compartment_series(s, :R)[end] for s in ens_s)
+        @test isapprox(finalR_m, finalR_s; rtol=0.10)
+
+        # Two distinct layers should produce more infections than a single layer.
+        spec_two = OutbreakSpec(; model,
+                                network=MultiplexNetwork([g1, g2], [1.0, 1.0]),
+                                initial=seed, tspan)
+        ens_two = simulate_ensemble(spec_two; nsims=30, seed=11, algorithm=DirectSSA())
+        finalR_two = mean(compartment_series(s, :R)[end] for s in ens_two)
+        @test finalR_two > finalR_s
+
+        # Validation: non-positive layer rates rejected.
+        @test_throws ArgumentError MultiplexNetwork([g1, g2], [1.0, -0.1])
+        # Validation: layer node counts must agree.
+        g3 = erdos_renyi(N+1, 4/N, rng=StableRNG(103))
+        @test_throws ArgumentError MultiplexNetwork([g1, g3], [1.0, 1.0])
+
+        # Other algorithms reject MultiplexNetwork.
+        spec_nr = OutbreakSpec(; model,
+                               network=MultiplexNetwork([g1, g2], [1.0, 1.0]),
+                               initial=seed, tspan)
+        @test_throws ArgumentError simulate(spec_nr; algorithm=NextReaction(), seed=1)
+        @test_throws ArgumentError simulate(spec_nr; algorithm=CompositionRejection(), seed=1)
+        @test_throws ArgumentError simulate(spec_nr; algorithm=HAS(), seed=1)
+    end
+
     @testset "HAS algorithm" begin
 
         # Shared SIS model for most tests.
@@ -591,3 +636,5 @@ using Statistics: mean
     end  # @testset "HAS algorithm"
 
 end  # @testset "NetworkOutbreaks"
+
+include("test_eon_patterns.jl")
