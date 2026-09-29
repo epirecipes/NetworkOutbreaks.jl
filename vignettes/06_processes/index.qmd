@@ -1,0 +1,259 @@
+---
+title: "Contact processes: dormant contacts, fleeting contacts and mass action"
+subtitle: "NetworkOutbreaks.jl vignette 06 (scenarios `:sir_dormant_*`, `:sir_mfsh_*`, `:sir_wm5`)"
+author: "Simon Frost"
+---
+
+## What this page shows
+
+Three contact structures beyond a static graph, each simulated exactly by NetworkOutbreaks and
+compared with its edge-based model (Miller, Slim & Volz 2012, Part II):
+
+1. **dormant contacts** — every node has k_m stubs; an active edge breaks at rate η_break and
+   both stubs go dormant; a dormant stub becomes active at rate η_form by pairing with another
+   activating stub (`DynamicNetwork(base, DormantContacts(η_form, η_break))`,
+   `DormantContactProcess`);
+2. **fleeting contacts** (mean-field social heterogeneity, MFSH) — node v has k_v stubs, and
+   at every instant each is joined to a uniformly chosen stub of another node, so no partnership
+   persists (`MFSHNetwork(d)`, `FleetingContactSSA`);
+3. **mass action** — a well-mixed population, sampled on counts (`WellMixed(κ)`,
+   `MassActionSSA`), against the same process on the complete graph.
+
+## Set-up
+
+```{julia}
+ENV["GKSwstype"] = "100"            # GR draws off-screen
+using NetworkEpiCore, NetworkOutbreaks, Catalyst, Graphs, Plots, Printf, Statistics
+using EdgeBasedModels
+include(joinpath(@__DIR__, "..", "_shared", "scenarios.jl"))    # wm_small, VIGNETTE_DATA
+include(joinpath(@__DIR__, "..", "_shared", "plotstyle.jl"))     # cmp_style, legend_room!, default font sizes
+
+sir = @reaction_network sir begin
+    @parameters τ γ
+    τ, S + I --> 2I        # contact: per-contact (per-stub) rate τ
+    γ, I --> R
+end
+model = contact_model(sir)
+@assert isequivalent(model, sir_model())
+
+se(x) = std(x) / sqrt(length(x))
+function against(id; dir = nothing, label = "edge-based")
+    s = scenario(id)
+    ref = dir === nothing ? scenario_summary(s) : scenario_summary(s; dir)
+    y = edge_based(model, s.network)
+    det = model_curves(y, solve_epidemic(y, s); t = s.tgrid, label)
+    @printf(":%s (hash %s): N = %d, %d runs, sampler :%s, %s, P(major) = %.3f (CI %.3f–%.3f)\n", id,
+            first(scenario_hash(s), 8), ref.N, ref.nsims, s.sim.algorithm, s.sim.condition, ref.p_major,
+            ref.p_major_ci...)
+    return (sc = s, ref = ref, sys = y, det = det, tab = compare(ref, det))
+end
+function report(x; label = "edge-based")
+    for X in (:I, :R)
+        r = x.tab[label, X]
+        @printf("   %-2s D∞ = %.5f at t = %.2f (z∞ = %.2f)\n", X, r.D∞, r.t_D∞, r.z∞)
+    end
+    r = x.tab[label, :I]
+    @printf("   ΔR∞ = %+.5f, 95%% CI (%+.5f, %+.5f); declared %s\n", r.ΔR∞, r.ΔR∞_ci..., x.sc.backends[:edge_based])
+end
+```
+
+## 1. Dormant contacts
+
+### The process alone
+
+At stationarity each stub is active with probability A = η_form/(η_form + η_break),
+independently, which is how a run's initial state is drawn:
+
+```{julia}
+s_msv = scenario(:sir_dormant_msv)
+dgr, info = sample_graph(s_msv.network, 10_000; rng = NetworkOutbreaks.stable_rng(1))
+@printf("%s\n", dgr.process)
+@printf("active stub fraction %.4f (target A = %.4f); mean active degree %.4f; mean stub count %.4f\n",
+        info.details.active_fraction, info.details.target_active_fraction, info.mean_degree,
+        info.details.mean_max_degree)
+g = copy(dgr.graph)
+for Δt in (0.5, 2.0)
+    c = evolve_graph!(g, dgr.process, Δt; rng = NetworkOutbreaks.stable_rng(round(Int, 10Δt)))
+    @printf("after a further t = %.1f: %d events (%d broken, %d formed, %d rejected); active fraction %.4f\n",
+            Δt, c.events, c.broken, c.formed, c.rejected, 2ne(g) / sum(dgr.process.max_degrees))
+end
+@printf("no node exceeds its stubs: %s\n", all(degree(g) .<= dgr.process.max_degrees))
+```
+
+### The edge-based model
+
+Its coordinates condition on the activity of a stub (θ_A, θ_D), carry the partnership memory χ,
+and split stubs of each state into active (α_X) and dormant (π_X). The per-reaction table, whose
+last row holds the stub-process terms:
+
+```{julia}
+lift_contributions(model, s_msv.network)
+```
+
+From the canned model, compared symbolically:
+
+```{julia}
+@assert vector_fields_equal(symbolic_ode(edge_based(model, s_msv.network)),
+                            symbolic_ode(edge_based(sir_model(), s_msv.network)))
+println("the Catalyst and canned lifts have the same vector field")
+```
+
+### Against the committed ensembles
+
+`:sir_dormant_msv` (η_form = η_break = 1, k_m ∈ {2, 8}), `:sir_dormant_dvd` (η_form = 0.1,
+η_break = 1, k_m ∈ {11, 44}: the dynamic variable-degree regime) and `:sir_dormant_fast`
+(η_form = η_break = 10), all with τ = γ = 1:
+
+```{julia}
+dormant = [against(id) for id in (:sir_dormant_msv, :sir_dormant_dvd, :sir_dormant_fast)]
+for x in dormant
+    println(":", x.sc.id); report(x)
+end
+```
+
+```{julia}
+x = dormant[1]; comparisonplot(x.ref, x.det; observables = [:I, :R], plot_title = ":$(x.sc.id)", cmp_style(2; title = true)...) |> legend_room!
+```
+
+```{julia}
+x = dormant[2]; comparisonplot(x.ref, x.det; observables = [:I, :R], plot_title = ":$(x.sc.id)", cmp_style(2; title = true)...) |> legend_room!
+```
+
+```{julia}
+x = dormant[3]; comparisonplot(x.ref, x.det; observables = [:I, :R], plot_title = ":$(x.sc.id)", cmp_style(2; title = true)...) |> legend_room!
+```
+
+As η_form = η_break → ∞ the dormant-contact model tends to fleeting contacts with the per-contact
+rate τA; `:sir_mfsh_msv` is that limit of `:sir_dormant_fast` (τA = 1/2):
+
+```{julia}
+fast = dormant[3]; mfsh_msv = against(:sir_mfsh_msv; label = "edge-based MFSH")
+for (name, x) in (("dormant, η = 10", fast), ("MFSH, τ = 1/2", mfsh_msv))
+    f = x.ref.final_size[x.ref.major]
+    @printf("%-16s SSA final size %.4f ± %.4f; edge-based %.4f\n", name, mean(f), 1.96se(f), x.det[:cumulative][end])
+end
+```
+
+η = 10 is still far from that limit: the two final sizes above differ by far more than their
+standard errors, and each SSA ensemble agrees with its own edge-based model, not with the other.
+The edge-based dormant-contact model at increasing η = η_form = η_break (τ = 1 fixed, so
+τA = 1/2) converges to the edge-based MFSH value:
+
+```{julia}
+r_mfsh = mfsh_msv.det[:cumulative][end]
+for η in (10.0, 100.0, 1000.0, 10_000.0)
+    net = DynamicNetwork(fast.sc.network.base, DormantContacts(η_form = η, η_break = η))
+    y = edge_based(model, net)
+    rη = model_curves(y, solve_epidemic(y, fast.sc); t = fast.sc.tgrid)[:cumulative][end]
+    @printf("η = %-7g edge-based R(20) = %.5f; minus MFSH (%.5f) = %+.5f\n", η, rη, r_mfsh, rη - r_mfsh)
+end
+```
+
+## 2. Fleeting contacts (MFSH)
+
+A population of fleeting contacts has stubs but no graph. On a κ-regular stub sequence the
+hazard of every node is that of mass action with κ contacts per unit time, so
+`MFSHNetwork(RegularDegree(5))` and `WellMixed(5)` are the same Markov chain, and the two
+samplers draw the same random numbers in the same order:
+
+```{julia}
+kw = (N = 2000, p = Dict(:τ => 0.1, :γ => 0.25), initial = SeedFraction(:I => 0.01), tspan = (0.0, 60.0),
+      nsims = 3, seed = 20260926, keep = :counts)
+fl = simulate(model, MFSHNetwork(RegularDegree(5)); kw...)
+ma = simulate(model, WellMixed(5); kw...)
+# the same states after every event; the event times agree up to floating-point rounding (printed)
+same = all(a.counts == b.counts && a.final_infection_counts == b.final_infection_counts for (a, b) in zip(fl.trajectories, ma.trajectories))
+dt = maximum(maximum(abs.(a.times .- b.times)) for (a, b) in zip(fl.trajectories, ma.trajectories))
+@printf("samplers %s and %s; 3 runs with identical states event by event: %s (events per run %s); max |Δt| = %.1e\n",
+        fl.trajectories[1].algorithm, ma.trajectories[1].algorithm, same, [length(t.times) - 1 for t in fl.trajectories], dt)
+```
+
+On heterogeneous stub counts the MFSH edge-based model has an expanded form (every T_EB model)
+and, for SIR, Miller, Slim & Volz's own two-equation compact form, which give the same curves:
+
+```{julia}
+s_mf = scenario(:sir_mfsh_pois5)
+ye = edge_based(model, s_mf.network); yc = edge_based(model, s_mf.network; form = :compact)
+ce = model_curves(ye, solve_epidemic(ye, s_mf); t = s_mf.tgrid)
+cc = model_curves(yc, solve_epidemic(yc, s_mf); t = s_mf.tgrid)
+@printf("max_t |I_expanded − I_compact| = %.2e; max_t |R∞ difference| = %.2e\n",
+        maximum(abs.(ce[:I] .- cc[:I])), maximum(abs.(ce[:cumulative] .- cc[:cumulative])))
+symbolic_ode(yc)
+```
+
+```{julia}
+mfsh = [against(:sir_mfsh_pois5; label = "edge-based MFSH"), mfsh_msv]
+for x in mfsh
+    println(":", x.sc.id); report(x; label = "edge-based MFSH")
+end
+comparisonplot(mfsh[1].ref, mfsh[1].det; observables = [:I, :R], plot_title = ":sir_mfsh_pois5", cmp_style(2; title = true)...) |> legend_room!
+```
+
+On `:sir_mfsh_pois5` the z∞ values exceed 3: at N = 10⁴ and 200 runs the standard error of the
+mean resolves an offset of a few 10⁻³ in the curves (the D∞ printed above), while the final size
+shows none (the ΔR∞ interval contains 0). This page does not show how that offset depends on N.
+The pairs are declared `:exact_limit`, which the design tests as D∞(I) < 0.005 and
+|ΔR∞| < 0.005:
+
+```{julia}
+for x in mfsh
+    r = x.tab["edge-based MFSH", :I]
+    @printf(":%-15s D∞(I) < 0.005: %s; |ΔR∞| < 0.005: %s\n", x.sc.id, r.D∞ < 0.005, abs(r.ΔR∞) < 0.005)
+end
+```
+
+## 3. Mass action: counts against the complete graph
+
+`WellMixed(κ)` means κ fleeting contacts per node per unit time with uniformly random partners.
+On N nodes that is the complete graph K_N with per-edge rate κτ/(N − 1), whose node-level chain
+lumps exactly to the compartment counts; `MassActionSSA` samples the counts directly, O(1) per
+event in N. The committed well-mixed scenario against the edge-based model on `WellMixed(5)`:
+
+```{julia}
+wm = against(:sir_wm5)
+report(wm)
+comparisonplot(wm.ref, wm.det; observables = [:I, :R], plot_title = ":sir_wm5", cmp_style(2; title = true)...) |> legend_room!
+```
+
+The edge-based model on `WellMixed(κ)` is conjugate to the mass-action ODE with β = κτ (the
+well-mixed unit M1, S = qξe^{κ(θ−1)}); the Lean library proves this map of vector fields
+(`NEP.wellmixed_unit`). NetworkEpiCore's registered transformation checks it on this model:
+
+```{julia}
+η1 = transformation(:well_mixed_unit)
+m1 = η1.component(model, wm.sc.network)
+res = verify(m1)
+println(res)
+mass_action(wm.sys; form = :exact).ode
+```
+
+Finally, the lumping itself: `:sir_wm5` at N = 500 with 1000 runs, sampled on counts by
+`MassActionSSA` and on K₅₀₀ by `NextReaction` (vignette-local summaries):
+
+```{julia}
+rs = Dict(alg => scenario_summary(wm_small(alg); dir = VIGNETTE_DATA) for alg in (:mass_action, :next_reaction))
+for alg in (:mass_action, :next_reaction)
+    r = rs[alg]; f = r.final_size[r.major]
+    @printf("%-14s hash %s: P(major) %.3f (CI %.3f–%.3f); final size of major runs %.4f ± %.4f\n", alg,
+            first(scenario_hash(wm_small(alg)), 8), r.p_major, r.p_major_ci..., mean(f), 1.96se(f))
+end
+a, b = rs[:mass_action], rs[:next_reaction]
+fa, fb = a.final_size[a.major], b.final_size[b.major]
+@printf("final size z = %+.2f; P(major) difference %+.4f\n", (mean(fa) - mean(fb)) / sqrt(se(fa)^2 + se(fb)^2),
+        a.p_major - b.p_major)
+d = abs.(a.cond[:I].mean .- b.cond[:I].mean) ./ max.(sqrt.(a.cond[:I].se .^ 2 .+ b.cond[:I].se .^ 2), 1e-4)
+@printf("max_t |ΔI|/SE over %d grid times = %.2f\n", length(d), maximum(d))
+plot(a.t, a.cond[:I].mean; ribbon = 1.96 .* a.cond[:I].se, lw = 2, color = :purple,
+     label = "MassActionSSA, mean ± 1.96 SE", xlabel = "t", ylabel = "I (fraction)", title = "N = 500, major runs")
+plot!(b.t, b.cond[:I].mean; ribbon = 1.96 .* b.cond[:I].se, lw = 2, ls = :dash, color = :black,
+      label = "NextReaction on K₅₀₀, mean ± 1.96 SE")
+```
+
+## Reproducibility
+
+```{julia}
+for x in vcat(dormant, mfsh, [wm])
+    @printf(":%s hash %s\n", x.sc.id, first(scenario_hash(x.sc), 8))
+end
+println("Julia ", VERSION)
+```

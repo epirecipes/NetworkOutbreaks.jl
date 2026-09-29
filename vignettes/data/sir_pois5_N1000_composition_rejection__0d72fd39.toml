@@ -1,0 +1,39 @@
+N = 1000
+algorithm_revision = "2"
+curves_file = "sir_pois5_N1000_composition_rejection__0d72fd39.curves.csv"
+id = "sir_pois5_N1000_composition_rejection"
+n_major = 2000
+nsims = 2000
+observables = ["S", "I", "R", "infectious", "cumulative"]
+p_major = 1.0
+p_major_ci = [0.9980829527187469, 1.0]
+runs_file = "sir_pois5_N1000_composition_rejection__0d72fd39.runs.csv"
+scenario_hash = "0d72fd39fa65fdfb314107183ac7ee373c0e58f05642ce5020820d3cfa9a6120"
+statistics = ["mean", "sd", "se", "q025", "q25", "q50", "q75", "q975"]
+summary_format = 1
+uncond_equals_cond = true
+
+[extras.conditioning]
+largest_unselected = nan
+measure = "new infections by t_end (excluding the seeds) / N"
+n_selected = 2000
+rule = "MajorOutbreak(0.05)"
+smallest_selected = 0.702
+
+[extras.sampling]
+algorithm = "CompositionRejection"
+base_seed = "20260926"
+graphs = "per_run"
+se = "iid (sd/sqrt(n))"
+
+[provenance]
+Graphs = "1.14.0"
+NetworkEpiCore = "0.1.0"
+NetworkOutbreaks = "0.2.0"
+StableRNGs = "1.0.4"
+algorithm = "CompositionRejection"
+algorithm_revision = "2"
+generator = "NetworkOutbreaks.summarise(scenario_ensemble(sc))"
+julia_version = "1.12.7"
+summary_digits = "mean=6,se=6,sd=5,quantiles=5,times=6"
+summary_revision = "2"
