@@ -1,0 +1,39 @@
+N = 5000
+algorithm_revision = "2"
+curves_file = "sir_ne_reg6_eta1__c77453d7.curves.csv"
+id = "sir_ne_reg6_eta1"
+n_major = 100
+nsims = 100
+observables = ["S", "I", "R", "infectious", "cumulative"]
+p_major = 1.0
+p_major_ci = [0.9630065017930143, 1.0]
+runs_file = "sir_ne_reg6_eta1__c77453d7.runs.csv"
+scenario_hash = "c77453d75902c89c0f8cc93603626a8b0f622598eb7f14c69a4db01ecbf9d353"
+statistics = ["mean", "sd", "se", "q025", "q25", "q50", "q75", "q975"]
+summary_format = 1
+uncond_equals_cond = true
+
+[extras.conditioning]
+largest_unselected = nan
+measure = "new infections by t_end (excluding the seeds) / N"
+n_selected = 100
+rule = "MajorOutbreak(0.05)"
+smallest_selected = 0.6934
+
+[extras.sampling]
+algorithm = "NextReaction"
+base_seed = "20260926"
+graphs = "per_run"
+se = "iid (sd/sqrt(n))"
+
+[provenance]
+Graphs = "1.14.0"
+NetworkEpiCore = "0.1.0"
+NetworkOutbreaks = "0.2.0"
+StableRNGs = "1.0.4"
+algorithm = "NextReaction"
+algorithm_revision = "2"
+generator = "NetworkOutbreaks.summarise(scenario_ensemble(sc))"
+julia_version = "1.12.7"
+summary_digits = "mean=6,se=6,sd=5,quantiles=5,times=6"
+summary_revision = "2"

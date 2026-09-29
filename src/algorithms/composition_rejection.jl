@@ -5,26 +5,32 @@ Composition–Rejection SSA (Slepoy, Thompson & Plimpton 2008,
 "A constant-time kinetic Monte Carlo algorithm for simulation of large
 biochemical reaction networks", J. Chem. Phys. 128, 205101).
 
-Each node carries a single aggregate hazard  a_v = spont_rate + infect_rate.
-Nodes are binned into logarithmic buckets:
+Each node carries a single aggregate hazard a_v = spontaneous rate + contact hazard (the shared definition in
+`algorithms/common.jl`). Nodes are binned into logarithmic buckets:
     bucket b  covers  [log_base · 2^(b-1),  log_base · 2^b)
 
 Total rate  Λ = Σ_b  S_b  where  S_b  is the bucket sum.
 
 Event selection:
-  1. Composition: pick bucket b  ∝ S_b  (linear scan over ≤ 64 buckets).
-  2. Rejection:   pick node uniformly from bucket b; accept with probability
-                  a_v / (log_base · 2^b).  Expected acceptance ≥ 0.5.
+  1. Composition: pick bucket b ∝ S_b (linear scan over ≤ 64 buckets).
+  2. Rejection:   pick a node uniformly from bucket b; accept with probability a_v / (log_base · 2^b).
+                  Expected acceptance ≥ 0.5. After 256 rejections the node is chosen exactly (∝ a_v) instead.
+                  Hazards outside buckets 1…64 are clamped into them; bucket 1 stays exact (its ceiling bounds any
+                  smaller hazard) and bucket 64, whose members may exceed its ceiling, is always sampled exactly.
   3. Time:        Δt = Exp(1) / Λ.
 
-Bucket membership is maintained with O(1) swap-and-pop removal so the
-per-event cost is O(Δ · log(a_max/a_min)) where Δ is the maximum node degree.
-For fixed-degree graphs this is effectively constant.
+Bucket membership is maintained with O(1) swap-and-pop removal, so the per-event cost is O(Δ · log(a_max/a_min))
+where Δ is the maximum node degree.
 
-NOTE: TimeVaryingNetwork is not yet supported; combine with DirectSSA or
-NextReaction for time-varying topologies.
+Time-varying networks, multiplex networks and interventions are not supported (use DirectSSA, NextReaction or HAS).
 =#
 
+"""
+    CompositionRejection <: OutbreakAlgorithm
+
+Composition–rejection SSA (Slepoy, Thompson & Plimpton 2008) with per-node hazards in logarithmic buckets: O(k̄)
+expected cost per event. Static networks only; no interventions.
+"""
 struct CompositionRejection <: OutbreakAlgorithm end
 
 const _CR_MAX_BUCKETS = 64
@@ -37,18 +43,14 @@ const _CR_MAX_BUCKETS = 64
     return clamp(1 + floor(Int, log2(a / log_base)), 1, _CR_MAX_BUCKETS)
 end
 
-# Total per-node hazard = spontaneous + infection
-@inline function _cr_total_hazard(v::Integer, g::AbstractGraph, model::OutbreakModel,
-                                  node_state::Vector{Int},
-                                  spont_total_rate::Vector{Float64},
-                                  infection_by_src::Vector{Vector{OutbreakTransition}},
-                                  via_mask::Dict{OutbreakTransition, BitVector})
-    src_idx = node_state[v]
-    return spont_total_rate[src_idx] +
-           _infection_hazard(v, g, model, node_state, infection_by_src[src_idx], via_mask)
+# Total per-node hazard = spontaneous + contact.
+@inline function _cr_total_hazard(tally::Vector{Float64}, v::Integer, layers, weights,
+                                  node_state::Vector{Int}, rm::_RunModel)
+    return rm.spont_total[node_state[v]] + _contact_hazard!(tally, v, layers, weights, node_state, rm)
 end
 
-# Remove node v from its bucket (O(1) swap-and-pop).  Returns old hazard.
+# Remove node v from its bucket (O(1) swap-and-pop). Returns the old hazard. A bucket that becomes empty has its
+# sum reset to exactly 0, so floating-point residue can never make an empty bucket selectable.
 function _cr_remove!(v::Int, node_hazard::Vector{Float64}, node_bucket::Vector{Int},
                      node_pos::Vector{Int}, bucket_members::Vector{Vector{Int}},
                      bucket_sum::Vector{Float64})
@@ -64,29 +66,19 @@ function _cr_remove!(v::Int, node_hazard::Vector{Float64}, node_bucket::Vector{I
         node_pos[last_v] = pos
     end
     pop!(members)
-    bucket_sum[b] -= old_h
+    bucket_sum[b] = isempty(members) ? 0.0 : bucket_sum[b] - old_h
     node_bucket[v] = 0
     node_pos[v]   = 0
     return old_h
 end
 
-# Recompute node v's hazard, remove from old bucket, insert into new bucket.
-# Returns the change in total_rate (new_h − old_h).
-function _cr_update_node!(v::Int, g::AbstractGraph, model::OutbreakModel,
-                          node_state::Vector{Int},
-                          spont_total_rate::Vector{Float64},
-                          infection_by_src::Vector{Vector{OutbreakTransition}},
-                          via_mask::Dict{OutbreakTransition, BitVector},
-                          node_hazard::Vector{Float64},
-                          node_bucket::Vector{Int},
-                          node_pos::Vector{Int},
-                          bucket_members::Vector{Vector{Int}},
-                          bucket_sum::Vector{Float64},
-                          log_base::Float64)
-    old_h = _cr_remove!(v, node_hazard, node_bucket, node_pos,
-                        bucket_members, bucket_sum)
-    new_h = _cr_total_hazard(v, g, model, node_state, spont_total_rate,
-                             infection_by_src, via_mask)
+# Recompute node v's hazard, remove it from its old bucket and insert it into the new one.
+function _cr_update_node!(v::Int, tally::Vector{Float64}, layers, weights, node_state::Vector{Int},
+                          rm::_RunModel, node_hazard::Vector{Float64}, node_bucket::Vector{Int},
+                          node_pos::Vector{Int}, bucket_members::Vector{Vector{Int}},
+                          bucket_sum::Vector{Float64}, log_base::Float64)
+    _cr_remove!(v, node_hazard, node_bucket, node_pos, bucket_members, bucket_sum)
+    new_h = _cr_total_hazard(tally, v, layers, weights, node_state, rm)
     node_hazard[v] = new_h
     if new_h > 0.0
         b = _cr_bucket_index(new_h, log_base)
@@ -95,73 +87,42 @@ function _cr_update_node!(v::Int, g::AbstractGraph, model::OutbreakModel,
         node_bucket[v] = b
         bucket_sum[b] += new_h
     end
-    return new_h - old_h
+    return nothing
 end
 
 # ---------------------------------------------------------------------------
 # Main simulation
 # ---------------------------------------------------------------------------
 
-function _simulate_impl(::CompositionRejection, spec::OutbreakSpec,
-                        seed::UInt64, keep::Symbol,
-                        interventions::InterventionPlan = InterventionPlan())
+function _simulate_impl(::CompositionRejection, spec::OutbreakSpec, rng::AbstractRNG, seed::_RecordedSeed,
+                        keep::Symbol, plan::InterventionPlan = InterventionPlan())
     spec.network isa TimeVaryingNetwork &&
         throw(ArgumentError(
             "CompositionRejection does not yet support TimeVaryingNetwork. " *
-            "Use DirectSSA or NextReaction for time-varying topologies."))
-    spec.network isa MultiplexNetwork &&
+            "Use DirectSSA, NextReaction or HAS for time-varying topologies."))
+    spec.network isa MultiplexGraph &&
         throw(ArgumentError(
-            "CompositionRejection does not yet support MultiplexNetwork; use DirectSSA"))
+            "CompositionRejection does not yet support MultiplexGraph; use DirectSSA, NextReaction or HAS"))
+    isempty(plan) ||
+        throw(ArgumentError("CompositionRejection does not support interventions; use DirectSSA, NextReaction or HAS"))
 
-    rng   = Xoshiro(seed)
-    model = spec.model
-    g     = _outbreak_graph(spec.network)
-    n     = nv(g)
-    C     = ncompartments(model)
+    g, layers, weights, _ = _prepare_network(spec.network)
+    return _cr_run(spec, rng, seed, keep, g, layers, weights)
+end
 
+# Function barrier: the loop is compiled for the concrete graph and layer types.
+function _cr_run(spec::OutbreakSpec, rng::AbstractRNG, seed::_RecordedSeed, keep::Symbol, g, layers, weights)
+    n = nv(g)
+    rm = _RunModel(spec.model, spec.network)
     node_state = initial_state(spec, rng)
-    state      = OutbreakState(model, node_state)
+    state = _initial_outbreak_state(rm, node_state)
+    tally = _tally_buffer(rm)
 
-    # Pre-bucket transitions by source compartment and type.
-    spont_by_src     = [OutbreakTransition[] for _ in 1:C]
-    infection_by_src = [OutbreakTransition[] for _ in 1:C]
-    for tr in model.transitions
-        src_idx = model.index_of[tr.from]
-        if tr.type == :spontaneous
-            push!(spont_by_src[src_idx], tr)
-        else
-            push!(infection_by_src[src_idx], tr)
-        end
-    end
-
-    spont_total_rate = zeros(Float64, C)
-    for i in 1:C
-        spont_total_rate[i] = sum((tr.rate for tr in spont_by_src[i]); init = 0.0)
-    end
-
-    via_mask = Dict{OutbreakTransition, BitVector}()
-    for tr in model.transitions
-        tr.type == :infection || continue
-        mask = falses(C)
-        if isempty(tr.via)
-            for i in 1:C
-                model.infectious[i] && (mask[i] = true)
-            end
-        else
-            for sym in tr.via
-                mask[model.index_of[sym]] = true
-            end
-        end
-        via_mask[tr] = mask
-    end
-
-    # --- Compute initial per-node hazards and initialise bucket structure. ---
+    # --- initial per-node hazards and bucket structure ---
     node_hazard = zeros(Float64, n)
     for v in 1:n
-        node_hazard[v] = _cr_total_hazard(v, g, model, node_state, spont_total_rate,
-                                          infection_by_src, via_mask)
+        node_hazard[v] = _cr_total_hazard(tally, v, layers, weights, node_state, rm)
     end
-
     active = filter(>(0.0), node_hazard)
     # log_base: lower edge of bucket 1; the minimum active hazard falls in bucket 1.
     log_base = isempty(active) ? 1.0 : minimum(active)
@@ -170,8 +131,6 @@ function _simulate_impl(::CompositionRejection, spec::OutbreakSpec,
     bucket_sum     = zeros(Float64, _CR_MAX_BUCKETS)
     node_bucket    = zeros(Int, n)
     node_pos       = zeros(Int, n)
-    total_rate     = 0.0
-
     for v in 1:n
         h = node_hazard[v]
         h > 0.0 || continue
@@ -180,25 +139,22 @@ function _simulate_impl(::CompositionRejection, spec::OutbreakSpec,
         node_pos[v]    = length(bucket_members[b])
         node_bucket[v] = b
         bucket_sum[b] += h
-        total_rate    += h
     end
 
     t_now = spec.tspan[1]
     t_end = spec.tspan[2]
+    rec = _Recorder(keep)
+    _record!(rec, t_now, state.counts)
 
-    times_buf  = Float64[t_now]
-    counts_buf = Vector{Vector{Int}}()
-    push!(counts_buf, copy(state.counts))
-    events_buf = OutbreakEvent[]
+    while true
+        total_rate = sum(bucket_sum)     # exact resync every event (no drift)
+        total_rate > 0.0 || break        # nothing can be scheduled here, so zero rate is absorbing
 
-    while t_now < t_end
-        total_rate <= 0.0 && break
+        t_next = t_now + randexp(rng) / total_rate
+        t_next <= t_end || break
+        t_now = t_next
 
-        # --- time advance ---
-        t_now += randexp(rng) / total_rate
-        t_now > t_end && break
-
-        # --- Composition: pick bucket proportional to bucket_sum ---
+        # --- composition: bucket ∝ bucket_sum ---
         target = rand(rng) * total_rate
         b = 0
         cum = 0.0
@@ -209,35 +165,36 @@ function _simulate_impl(::CompositionRejection, spec::OutbreakSpec,
                 break
             end
         end
-        if b == 0  # floating-point overshoot fallback
+        if b == 0  # floating-point overshoot: the last non-empty bucket
             for i in _CR_MAX_BUCKETS:-1:1
-                if bucket_sum[i] > 0.0
-                    b = i; break
+                if !isempty(bucket_members[i])
+                    b = i
+                    break
                 end
             end
         end
-        b == 0 && break  # absorbing state
 
-        # --- Rejection: pick node uniformly from bucket b, accept ∝ a_v ---
-        a_max_b = log_base * exp2(b)   # = log_base · 2^b  (bucket ceiling)
+        # --- rejection: uniform node in bucket b, accepted ∝ a_v ---
+        # Exact when every member satisfies a_v ≤ log_base · 2^b. The index is clamped to the top bucket, whose
+        # members may exceed its ceiling (hazards spanning more than 2^63), so that bucket is always sampled exactly.
+        members = bucket_members[b]
+        a_max_b = log_base * exp2(b)   # bucket ceiling log_base · 2^b
         fired_node = 0
-        @inbounds for _ in 1:256
-            members = bucket_members[b]
-            isempty(members) && break
-            v = members[rand(rng, 1:length(members))]
-            rand(rng) * a_max_b <= node_hazard[v] && (fired_node = v; break)
-        end
-        if fired_node == 0
-            members = bucket_members[b]
-            if isempty(members) || bucket_sum[b] <= 0.0
-                total_rate = sum(bucket_sum)
-                continue
+        if b < _CR_MAX_BUCKETS
+            @inbounds for _ in 1:256
+                v = members[rand(rng, 1:length(members))]
+                if rand(rng) * a_max_b <= node_hazard[v]
+                    fired_node = v
+                    break
+                end
             end
-            target_in_bucket = rand(rng) * bucket_sum[b]
+        end
+        if fired_node == 0          # exact sampling within the bucket (after 256 rejections, or the top bucket)
+            target_in_bucket = rand(rng) * sum(node_hazard[v] for v in members)
             cum_in_bucket = 0.0
             for v in members
                 cum_in_bucket += node_hazard[v]
-                if target_in_bucket <= cum_in_bucket
+                if target_in_bucket < cum_in_bucket
                     fired_node = v
                     break
                 end
@@ -245,59 +202,26 @@ function _simulate_impl(::CompositionRejection, spec::OutbreakSpec,
             fired_node == 0 && (fired_node = members[end])
         end
 
-        # --- Sample which transition fires ---
-        src_idx = node_state[fired_node]
-        spont_h = spont_total_rate[src_idx]
-        fired_tr = if rand(rng) * node_hazard[fired_node] < spont_h
-            _sample_spontaneous_transition(spont_by_src[src_idx], rng)
+        # --- which transition fires ---
+        c = node_state[fired_node]
+        fired_j = if rand(rng) * node_hazard[fired_node] < rm.spont_total[c]
+            _sample_spontaneous_transition(rm, c, rng)
         else
-            _sample_infection_transition(fired_node, g, model, node_state,
-                                         infection_by_src[src_idx], via_mask, rng)
+            _sample_contact_transition!(tally, fired_node, layers, weights, node_state, rm, rng)
         end
 
-        # --- Apply event ---
-        old_idx = src_idx
-        new_idx = model.index_of[fired_tr.to]
-        node_state[fired_node] = new_idx
-        state.counts[old_idx] -= 1
-        state.counts[new_idx] += 1
-        if model.infectious[new_idx] && !model.infectious[old_idx]
-            state.infection_counts[fired_node] += 1
-        end
+        _fire!(state, rm, fired_node, fired_j)
+        _record!(rec, t_now, state.counts)
+        _log_event!(rec, t_now, fired_j, fired_node)
 
-        push!(times_buf, t_now)
-        push!(counts_buf, copy(state.counts))
-        if keep == :events
-            push!(events_buf,
-                  OutbreakEvent(t_now, _transition_index(model, fired_tr), fired_node))
-        end
-
-        # --- Update buckets: fired node + its neighbours ---
-        Δ = _cr_update_node!(fired_node, g, model, node_state, spont_total_rate,
-                             infection_by_src, via_mask, node_hazard, node_bucket,
-                             node_pos, bucket_members, bucket_sum, log_base)
-        total_rate += Δ
+        # --- update the fired node and its neighbours ---
+        _cr_update_node!(fired_node, tally, layers, weights, node_state, rm, node_hazard, node_bucket,
+                         node_pos, bucket_members, bucket_sum, log_base)
         @inbounds for u in neighbors(g, fired_node)
-            Δ = _cr_update_node!(u, g, model, node_state, spont_total_rate,
-                                 infection_by_src, via_mask, node_hazard, node_bucket,
-                                 node_pos, bucket_members, bucket_sum, log_base)
-            total_rate += Δ
+            _cr_update_node!(u, tally, layers, weights, node_state, rm, node_hazard, node_bucket,
+                             node_pos, bucket_members, bucket_sum, log_base)
         end
-        # Periodic full resync to prevent floating-point drift
-        total_rate = sum(bucket_sum)
     end
 
-    if times_buf[end] < t_end
-        push!(times_buf, t_end)
-        push!(counts_buf, copy(state.counts))
-    end
-
-    counts_mat = Matrix{Int}(undef, C, length(times_buf))
-    @inbounds for k in eachindex(times_buf)
-        counts_mat[:, k] = counts_buf[k]
-    end
-
-    return OutbreakTrajectory(model, times_buf, counts_mat,
-                              copy(state.infection_counts),
-                              events_buf, seed, :CompositionRejection)
+    return _trajectory(rec, rm, state, t_end, seed, :CompositionRejection)
 end

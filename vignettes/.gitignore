@@ -1,2 +1,9 @@
 /.quarto/
 **/*.quarto_ipynb
+
+# Rendered HTML/PDF are built by CI (.github/workflows/vignettes.yml) from _freeze/;
+# keep only the sources, index.md (+ its *_files/ figures) and _freeze/ in git.
+**/index.html
+**/index.pdf
+**/site_libs/
+**/index_files/figure-pdf/

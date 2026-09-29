@@ -1,0 +1,409 @@
+# SIS on a 3-regular network: pairwise and reinfection counting
+Simon Frost
+
+- [What this page shows](#what-this-page-shows)
+- [The shared set-up](#the-shared-set-up)
+- [The stochastic model, twice](#the-stochastic-model-twice)
+  - [Seeds and degrees](#seeds-and-degrees)
+- [The pairwise model, twice](#the-pairwise-model-twice)
+  - [Against the simulations](#against-the-simulations)
+- [Reinfection counting](#reinfection-counting)
+  - [Histograms at t = 80](#histograms-at-t--80)
+- [Reproducibility](#reproducibility)
+
+## What this page shows
+
+The susceptible–infected–susceptible (SIS) model on a random 3-regular
+network, the shared scenario `:sis_reg3`, simulated exactly by
+NetworkOutbreaks and compared with two deterministic approximations from
+NodeBasedModels:
+
+1.  the homogeneous **pairwise** model with the Bernoulli (constant-K)
+    triple closure, and
+2.  the same model lifted by **reinfection counting** (Keeling, House,
+    Cooper & Pellis 2016, Approximation 1), which also predicts how many
+    times each node has been infected.
+
+The reference is the committed NetworkOutbreaks ensemble of the scenario
+(10⁴ nodes, 200 runs, a fresh graph per run). Every number quoted in the
+text is printed by a cell on this page.
+
+An earlier version of this page seeded no infected nodes at all (N = 500
+with a seed fraction of 0.001) and simulated a 4-regular graph while the
+ODEs used degree 3. Both mistakes are impossible here: the network, the
+parameters and the seeding are read from one `Scenario`, and the seeds
+are checked below.
+
+## The shared set-up
+
+``` julia
+using NetworkEpiCore, NetworkOutbreaks, Catalyst, Graphs, Plots, Printf, Statistics
+include(joinpath(@__DIR__, "..", "_shared", "plotstyle.jl"))     # cmp_style, legend_room!, default font sizes
+import NodeBasedModels as NBM
+
+sis = @reaction_network sis begin
+    @parameters τ γ
+    τ, S + I --> 2I        # contact: per-contact (per-edge) rate τ; S converted, I unchanged
+    γ, I --> S             # recovery back to susceptible (a "resusceptibility" transition)
+end
+model = contact_model(sis)             # prints the typing report
+```
+
+    ContactModel :sis  (source: Catalyst.ReactionSystem; method: stoichiometry; rates: PerContact)
+      species       S (Sus)   I
+      contacts      [1] S + I → I + I    τ    contact    infector I, entry I
+      transitions   [2] I → S            γ    resus
+      typing        T_net  ⇒  edge_based ✗  s_anchored ✗  pairwise ✓  individual ✓  pair ✓  stochastic ✓  mass_action ✓
+      violations    `γ, I --> S` (type resus: node → sus) produces the susceptible species S.
+      assumptions   Sus inferred as recipients \ contact products = {S}
+
+``` julia
+sc  = scenario(:sis_reg3)              # RegularDegree(3), τ = 1/2, γ = 1/4, 1% seeds in I, t ∈ [0, 80]
+@assert isequivalent(model, sc.model)
+ref = scenario_summary(sc)             # the committed NetworkOutbreaks ensemble
+@printf("N = %d, %d runs, conditioning %s: %d runs kept, P(survival) = %.3f (95%% Wilson CI %.3f–%.3f)\n",
+        ref.N, ref.nsims, sc.sim.condition, ref.n_major, ref.p_major, ref.p_major_ci...)
+@printf("graphs: %s; sampler: %s; base seed %d\n", sc.sim.graphs, sc.sim.algorithm, sc.sim.base_seed)
+```
+
+    N = 10000, 200 runs, conditioning NetworkEpiCore.Survival(): 200 runs kept, P(survival) = 1.000 (95% Wilson CI 0.981–1.000)
+    graphs: per_run; sampler: next_reaction; base seed 20260926
+
+SIS models are conditioned on **survival** (prevalence at t_end \> 0),
+the rule of design §E.2 for models with reinfection; the conditioned and
+unconditioned statistics coincide when every run survives.
+
+The typing report above says why there is no edge-based comparison on
+this page: the transition `I → S` produces a susceptible, so the model
+is outside the edge-based type theory T_EB. No Lean theorem is cited for
+this. The rule that a “resus” reaction blocks the edge-based back ends
+is tested in NetworkEpiCore (test set “T_EB and the transition types”,
+`test/suites/ir_typing.jl`), and NetworkEpiCore refuses the lift:
+
+``` julia
+@show is_admissible(model, :edge_based; network = sc.network)
+@show is_admissible(model, :pairwise; network = sc.network)
+@show sc.backends[:edge_based];
+```
+
+    is_admissible(model, :edge_based; network = sc.network) = false
+    is_admissible(model, :pairwise; network = sc.network) = true
+    sc.backends[:edge_based] = :inadmissible
+
+## The stochastic model, twice
+
+The low level: the contact model is converted to a NetworkOutbreaks
+`OutbreakModel` (per-contact rates, the infectious compartments marked).
+The factory `sis_model()` must give the same model.
+
+``` julia
+om  = OutbreakModel(model, sc.params; network = sc.network)          # from the Catalyst network
+omF = OutbreakModel(sis_model(), sc.params; network = sc.network)    # from the canned factory
+om
+```
+
+    OutbreakModel :sis with 2 compartments and 2 transitions
+      compartments: S, I*   (* infectious)
+      susceptible:  S
+      infected:     I
+      S → I  infection at 0.5 via I
+      I → S  spontaneous at 0.25
+
+``` julia
+signature(m) = (m.compartments, m.infectious,
+                [(t.from, t.to, t.rate, t.type, Tuple(t.via)) for t in m.transitions])
+@assert signature(om) == signature(omF)
+println("the two OutbreakModels agree: ", signature(om) == signature(omF))
+```
+
+    the two OutbreakModels agree: true
+
+### Seeds and degrees
+
+`SeedFraction(:I => 0.01)` on N = 10⁴ nodes is exactly 100 infected
+nodes, chosen uniformly without replacement (the `Scenario` constructor
+requires ρN to be an integer). Run 1 of the reference ensemble,
+regenerated on its own with its own graph and random stream:
+
+``` julia
+@show seed_counts(sc.initial, sc.sim.N)
+traj1 = scenario_run(sc, 1)
+@printf("run 1 at t = 0: S = %d, I = %d\n", traj1.counts[om.index_of[:S], 1], traj1.counts[om.index_of[:I], 1])
+@printf("ensemble mean I(0)/N = %.4f (all runs start from exactly 100 seeds)\n", ref.cond[:I].mean[1])
+g1 = scenario_graph(sc, 1)
+@printf("run 1 graph: %d nodes, degrees %s\n", nv(g1), unique(degree(g1)))
+@printf("realised mean degree over the 200 graphs: min %.4f, max %.4f\n", extrema(ref.realised[:mean_degree])...)
+```
+
+    seed_counts(sc.initial, sc.sim.N) = [:I => 100]
+    run 1 at t = 0: S = 9900, I = 100
+    ensemble mean I(0)/N = 0.0100 (all runs start from exactly 100 seeds)
+    run 1 graph: 10000 nodes, degrees [3]
+    realised mean degree over the 200 graphs: min 3.0000, max 3.0000
+
+## The pairwise model, twice
+
+Low level: `node_based` lowers the same contact model onto the network
+descriptor, with the default Bernoulli closure \[ABC\] ≈
+K·\[AB\]\[BC\]/\[B\], K = (k − 1)/k = 2/3 on a 3-regular network.
+Factory: `generate_pairwise(sis_model(), …)`. The two vector fields are
+compared symbolically.
+
+``` julia
+sys  = NBM.node_based(model, sc.network)
+sysF = NBM.generate_pairwise(sis_model(), sc.network, NBM.BernoulliClosure(); cumulative = true)
+@assert vector_fields_equal(symbolic_ode(sys), symbolic_ode(sysF))
+@printf("closure constant K = %.4f\n", closure_constant(sc.network.degrees))
+symbolic_ode(sys)
+```
+
+    closure constant K = 0.6667
+
+    SymbolicODE :pairwise_sis (6 states)
+      dS/dt = I(t)*γ - SI(t)*τ
+      dI/dt = -I(t)*γ + SI(t)*τ
+      dSS/dt = 2SI(t)*γ - 1.3333333333333333ifelse(S(t) == 0, 0, (SS(t)*SI(t)) / S(t))*τ
+      dSI/dt = -0.6666666666666666ifelse(S(t) == 0, 0, (SI(t)^2) / S(t))*τ + II(t)*γ - SI(t)*(γ + τ) + 0.6666666666666666ifelse(S(t) == 0, 0, (SS(t)*SI(t)) / S(t))*τ
+      dII/dt = 1.3333333333333333ifelse(S(t) == 0, 0, (SI(t)^2) / S(t))*τ - 2II(t)*γ + 2SI(t)*τ
+      dcumulative/dt = SI(t)*τ
+      parameters  γ, τ
+
+Its threshold and early growth rate (the linearisation about the
+disease-free state, with the scenario’s rates):
+
+``` julia
+τc = NBM.epidemic_threshold(sys; p = sc.params)
+r_pw = NBM.early_growth_rate(sys; p = sc.params)
+@printf("pairwise threshold τ_c = γ/(k − 1) = %.4f; τ/τ_c = %.2f; early growth rate r = %.4f\n",
+        τc, sc.params[:τ] / τc, r_pw)
+```
+
+    pairwise threshold τ_c = γ/(k − 1) = 0.1250; τ/τ_c = 4.00; early growth rate r = 0.5000
+
+### Against the simulations
+
+``` julia
+sol = solve_epidemic(sys, sc)
+det = model_curves(sys, sol; t = sc.tgrid, label = "pairwise (Bernoulli, K = 2/3)")
+comparisonplot(ref, det; observables = [:I], cmp_style(1; legend = [:bottomright :topright])...)
+```
+
+![](index_files/figure-commonmark/cell-10-output-1.svg)
+
+``` julia
+tab = compare(ref, det; observables = [:I])
+row = tab["pairwise (Bernoulli, K = 2/3)", :I]
+@printf("D∞(I) = %.4f at t = %.2f (z∞ = %.1f); grid coverage of the mean band %.3f\n",
+        row.D∞, row.t_D∞, row.z∞, row.coverage)
+iend = length(ref.t)
+st = ref.cond[:I]
+@printf("endemic prevalence at t = %.0f: SSA %.4f ± %.4f (1.96 SE), pairwise %.4f (difference %+.4f)\n",
+        ref.t[iend], st.mean[iend], 1.96 * st.se[iend], det[:I][iend], det[:I][iend] - st.mean[iend])
+```
+
+    D∞(I) = 0.1456 at t = 9.50 (z∞ = 93.7); grid coverage of the mean band 0.153
+    endemic prevalence at t = 80: SSA 0.8171 ± 0.0006 (1.96 SE), pairwise 0.8182 (difference +0.0011)
+
+The pairwise model gets the endemic level almost right but the transient
+too fast. The early growth rate of the ensemble mean (a log-linear fit
+over 1 ≤ t ≤ 5, where prevalence is below 15%) is smaller than the
+pairwise r printed above:
+
+``` julia
+w = findall(t -> 1 <= t <= 5, ref.t)
+slope(y) = (X = [ones(length(w)) ref.t[w]]; (X \ log.(y[w]))[2])
+@printf("growth rate over t ∈ [1, 5]: SSA mean %.4f, pairwise curve %.4f (linearised pairwise r = %.4f)\n",
+        slope(st.mean), slope(det[:I]), r_pw)
+```
+
+    growth rate over t ∈ [1, 5]: SSA mean 0.4437, pairwise curve 0.4883 (linearised pairwise r = 0.5000)
+
+Neither `:sis_reg3` back end is declared exact (`sc.backends` lists them
+as `:approximate`), so these differences are reported, not asserted. For
+SIS, `:cumulative` is cumulative *incidence* per node (it exceeds 1), so
+the ΔR∞ column of `compare` is not a final size and is not quoted.
+
+## Reinfection counting
+
+`with_reinfection_counting(model, L)` refines each compartment by the
+number of times the node has been infected, capped at L (“at least L”).
+A seed counts as infected once, as in NetworkOutbreaks’
+`reinfection_histogram`, so the seeds start in I₁. The lifted model for
+L = 4:
+
+``` julia
+rc4 = with_reinfection_counting(model, 4)
+```
+
+    ContactModel :sis_reinf_L4  (source: transform; method: explicit; rates: PerContact)
+      species       S_0 (Sus)   S_1 (Sus)   S_2 (Sus)   S_3 (Sus)   S_4 (Sus)   I_1   I_2   I_3   I_4
+      contacts      [1]  S_0 + I_1 → I_1 + I_1    τ    contact    infector I_1, entry I_1
+                    [2]  S_0 + I_2 → I_1 + I_2    τ    contact    infector I_2, entry I_1
+                    [3]  S_0 + I_3 → I_1 + I_3    τ    contact    infector I_3, entry I_1
+                    [4]  S_0 + I_4 → I_1 + I_4    τ    contact    infector I_4, entry I_1
+                    [5]  S_1 + I_1 → I_2 + I_1    τ    contact    infector I_1, entry I_2
+                    [6]  S_1 + I_2 → I_2 + I_2    τ    contact    infector I_2, entry I_2
+                    [7]  S_1 + I_3 → I_2 + I_3    τ    contact    infector I_3, entry I_2
+                    [8]  S_1 + I_4 → I_2 + I_4    τ    contact    infector I_4, entry I_2
+                    [9]  S_2 + I_1 → I_3 + I_1    τ    contact    infector I_1, entry I_3
+                    [10] S_2 + I_2 → I_3 + I_2    τ    contact    infector I_2, entry I_3
+                    [11] S_2 + I_3 → I_3 + I_3    τ    contact    infector I_3, entry I_3
+                    [12] S_2 + I_4 → I_3 + I_4    τ    contact    infector I_4, entry I_3
+                    [13] S_3 + I_1 → I_4 + I_1    τ    contact    infector I_1, entry I_4
+                    [14] S_3 + I_2 → I_4 + I_2    τ    contact    infector I_2, entry I_4
+                    [15] S_3 + I_3 → I_4 + I_3    τ    contact    infector I_3, entry I_4
+                    [16] S_3 + I_4 → I_4 + I_4    τ    contact    infector I_4, entry I_4
+                    [17] S_4 + I_1 → I_4 + I_1    τ    contact    infector I_1, entry I_4
+                    [18] S_4 + I_2 → I_4 + I_2    τ    contact    infector I_2, entry I_4
+                    [19] S_4 + I_3 → I_4 + I_3    τ    contact    infector I_3, entry I_4
+                    [20] S_4 + I_4 → I_4 + I_4    τ    contact    infector I_4, entry I_4
+      transitions   [21] I_1 → S_1                γ    resus
+                    [22] I_2 → S_2                γ    resus
+                    [23] I_3 → S_3                γ    resus
+                    [24] I_4 → S_4                γ    resus
+      typing        T_net  ⇒  edge_based ✗  s_anchored ✗  pairwise ✓  individual ✓  pair ✓  stochastic ✓  mass_action ✓
+      violations    `γ, I_1 --> S_1` (type resus: node → sus) produces the susceptible species S_1.
+                    `γ, I_2 --> S_2` (type resus: node → sus) produces the susceptible species S_2.
+                    `γ, I_3 --> S_3` (type resus: node → sus) produces the susceptible species S_3.
+                    `γ, I_4 --> S_4` (type resus: node → sus) produces the susceptible species S_4.
+                    `τ, S_1 + I_1 --> I_2 + I_1`: S_1 is a second susceptible class (multiple_sus).
+                    `τ, S_2 + I_1 --> I_3 + I_1`: S_2 is a third susceptible class (multiple_sus).
+                    `τ, S_3 + I_1 --> I_4 + I_1`: S_3 is a fourth susceptible class (multiple_sus).
+                    `τ, S_4 + I_1 --> I_4 + I_1`: S_4 is a fifth susceptible class (multiple_sus).
+      assumptions   Sus inferred as recipients \ contact products = {S}
+                    transform of a catalyst model (method stoichiometry)
+                    with_reinfection_counting(L = 4): X ↦ X_p by infection count p ≤ 4 (saturating); infections: S_I_to_I
+
+The refinement is exact for the stochastic process (it only labels
+nodes), but not for the pairwise *closure*: the Bernoulli closure is now
+applied to each refined triple \[A_p B_q C_r\], which distinguishes
+never-infected susceptibles (S₀, with uncorrelated neighbourhoods) from
+recovered ones (S_p, p ≥ 1, next to the node they were infected by or
+infected). This is Approximation 1 of Keeling et al. (2016), and the
+aggregate prevalence differs from the plain pairwise model. The lifted
+systems have many small variables, so they are solved with tight
+tolerances; the solver’s return code is checked.
+
+``` julia
+tol = (reltol = 1e-10, abstol = 1e-12)
+function counted(L)
+    rc   = with_reinfection_counting(model, L)
+    init = SeedFraction(:I_1 => 0.01)
+    s    = NBM.node_based(rc, sc.network; initial = init, tspan = sc.tspan)
+    so   = solve_epidemic(s; p = sc.params, initial = init, tspan = sc.tspan, saveat = sc.tgrid, tol...)
+    @assert string(so.retcode) == "Success"
+    tot  = reinfection_totals(s, so)
+    c    = ModelCurves(sc.tgrid, Dict(:S => tot[:S], :I => tot[:I], :infectious => tot[:I]);
+                       label = "pairwise + reinfection counting, L = $(L)", representation = :model)
+    return s, so, c
+end
+bucket(s, so, p) = p == 0 ? compartment(s, so, :S_0)[end] :
+                   compartment(s, so, Symbol(:S_, p))[end] + compartment(s, so, Symbol(:I_, p))[end]
+
+# the plain pairwise model at the same tolerances (its bias is not a solver effect)
+det_tight = model_curves(sys, solve_epidemic(sys, sc; tol...); t = sc.tgrid, label = "pairwise (Bernoulli, K = 2/3)")
+sys4, sol4, c4 = counted(4)
+sys8, sol8, c8 = counted(8)
+comparisonplot(ref, det_tight, c4, c8; observables = [:I], cmp_style(1; legend = [:bottomright :topright])...)
+```
+
+![](index_files/figure-commonmark/cell-14-output-1.svg)
+
+The L = 4 curve is drawn, but it is hidden under the L = 8 curve: the
+two differ by less than the line width (the largest difference is
+printed below).
+
+``` julia
+@printf("max over t of |I(L = 4) − I(L = 8)| = %.2e\n", maximum(abs.(c4[:I] .- c8[:I])))
+tabL = compare(ref, det_tight, c4, c8; observables = [:I])
+for r in tabL
+    @printf("%-42s D∞(I) = %.4f at t = %5.2f (z∞ = %5.1f); I(80) − SSA = %+.4f\n", r.label, r.D∞, r.t_D∞, r.z∞,
+            (r.label == det_tight.label ? det_tight : r.label == c4.label ? c4 : c8)[:I][end] - st.mean[end])
+end
+```
+
+    max over t of |I(L = 4) − I(L = 8)| = 4.52e-06
+    pairwise (Bernoulli, K = 2/3)              D∞(I) = 0.1456 at t =  9.50 (z∞ =  93.7); I(80) − SSA = +0.0011
+    pairwise + reinfection counting, L = 4     D∞(I) = 0.0039 at t =  9.75 (z∞ =   5.3); I(80) − SSA = +0.0011
+    pairwise + reinfection counting, L = 8     D∞(I) = 0.0039 at t =  9.75 (z∞ =   5.3); I(80) − SSA = +0.0011
+
+Refining by infection count removes almost all of the transient error of
+the plain pairwise model on this network, and L = 4 and L = 8 give the
+same prevalence to the printed precision (the refinement matters most
+for the first infections, and a cap of 4 already separates them).
+
+### Histograms at t = 80
+
+The committed summary stores the mean fraction of nodes infected p times
+at t_end, over the surviving runs. Capping it at L gives the quantity
+the lifted ODE predicts.
+
+``` julia
+h_ssa = Float64.(ref.extras[:reinfection_histogram]["cond"])
+capped(h, L) = [h[1:L]; sum(h[L+1:end])]
+mean_count = sum((p - 1) * h_ssa[p] for p in eachindex(h_ssa))
+@printf("SSA: mean number of infections per node by t = 80: %.3f (the :cumulative mean: %.3f)\n",
+        mean_count, ref.cond[:cumulative].mean[end])
+@printf("plain pairwise cumulative incidence per node at t = 80: %.3f\n", det_tight[:cumulative][end])
+for (L, s, so) in ((4, sys4, sol4), (8, sys8, sol8))
+    hL = [bucket(s, so, p) for p in 0:L]; sL = capped(h_ssa, L)
+    @printf("L = %d: top bucket (≥ %d infections): SSA %.5f, ODE %.5f; max_p |ODE − SSA| = %.5f\n", L, L,
+            sL[end], hL[end], maximum(abs.(hL .- sL)))
+end
+h8 = [bucket(sys8, sol8, p) for p in 0:8]; s8 = capped(h_ssa, 8)
+@printf("buckets 4–7: SSA %s\n", join((@sprintf("%.5f", x) for x in s8[5:8]), " "))
+@printf("             ODE %s\n", join((@sprintf("%.5f", x) for x in h8[5:8]), " "))
+```
+
+    SSA: mean number of infections per node by t = 80: 15.466 (the :cumulative mean: 15.466)
+    plain pairwise cumulative incidence per node at t = 80: 15.704
+    L = 4: top bucket (≥ 4 infections): SSA 0.99999, ODE 0.99999; max_p |ODE − SSA| = 0.00000
+    L = 8: top bucket (≥ 8 infections): SSA 0.99598, ODE 0.99600; max_p |ODE − SSA| = 0.00002
+    buckets 4–7: SSA 0.00004 0.00024 0.00091 0.00283
+                 ODE 0.00005 0.00023 0.00090 0.00281
+
+With about 15 infections per node by t = 80, almost every node is in the
+top bucket of either cap; the lower tail printed above (nodes infected
+only 4–7 times in 80 time units) is small in both, and the histogram at
+t_end is therefore a weak test here. The prevalence curves above are the
+informative comparison.
+
+A dot plot of the tail buckets p = 3–8 on a log axis. A bucket that is
+exactly 0 in a source has no place on a log axis and is left out of that
+source’s points; the values plotted are printed first:
+
+``` julia
+ps = 3:8
+ks = [p for p in ps if s8[p + 1] > 0]; kh = [p for p in ps if h8[p + 1] > 0]
+for p in ps
+    @printf("p = %d: SSA %.2e, ODE %.2e\n", p, s8[p + 1], h8[p + 1])
+end
+scatter(ks .- 0.08, s8[ks .+ 1]; yscale = :log10, marker = :circle, ms = 6, color = :gray30,
+        label = "SSA mean ($(ref.n_major) surviving runs)", xticks = ps, yticks = 10.0 .^ (-6:0),
+        xlabel = "infections per node p (8 = at least 8)", ylabel = "fraction of nodes at t = 80",
+        legend = :topleft)
+scatter!(kh .+ 0.08, h8[kh .+ 1]; marker = :diamond, ms = 6, color = :darkorange,
+         label = "pairwise + reinfection counting, L = 8")
+```
+
+    p = 3: SSA 1.00e-05, ODE 6.89e-06
+    p = 4: SSA 4.10e-05, ODE 4.72e-05
+    p = 5: SSA 2.36e-04, ODE 2.34e-04
+    p = 6: SSA 9.10e-04, ODE 9.03e-04
+    p = 7: SSA 2.83e-03, ODE 2.81e-03
+    p = 8: SSA 9.96e-01, ODE 9.96e-01
+
+![](index_files/figure-commonmark/cell-17-output-2.svg)
+
+## Reproducibility
+
+``` julia
+@printf("scenario :%s, hash %s\n", sc.id, first(scenario_hash(sc), 8))
+@printf("summary made by %s, NetworkOutbreaks %s, algorithm revision %s\n",
+        ref.provenance["generator"], ref.provenance["NetworkOutbreaks"], ref.algorithm_revision)
+println("Julia ", VERSION)
+```
+
+    scenario :sis_reg3, hash 485d890e
+    summary made by NetworkOutbreaks.summarise(scenario_ensemble(sc)), NetworkOutbreaks 0.2.0, algorithm revision 2
+    Julia 1.12.7

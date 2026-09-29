@@ -1,98 +1,205 @@
 ---
-title: "Interventions: Vaccination Pulse"
+title: "Interventions: continuous vaccination and vaccination pulses"
+subtitle: "NetworkOutbreaks.jl vignette 03 (scenarios `:sir_vax_pois5`, `:sir_pois5`, `:sirv_pulse0_pois5`)"
 author: "Simon Frost"
-date: today
-subtitle: "NetworkOutbreaks.jl Vignette 03"
-engine: julia
-julia:
-  project: ".."
 ---
 
-## Introduction
+## What this page shows
 
-NetworkOutbreaks.jl supports **scheduled interventions** that modify
-the simulation mid-run. This vignette demonstrates a vaccination pulse
-using `ScheduledStateChange`: at a specified time, a fraction of the
-population is moved from susceptible (S) to vaccinated (V).
+1. **Continuous vaccination** S → V at rate ν is part of the model, so it has a committed
+   reference ensemble (`:sir_vax_pois5`) and an exact-in-the-limit edge-based model (the
+   survival factor ξ = e^{−νt}).
+2. **A vaccination pulse** — 30% of the population vaccinated at one time t₀ — is an
+   *intervention* of the simulation, `ScheduledStateChange(t₀, :V, 0.3; from = [:S])`. A pulse
+   at t₀ = 0 is the same process as seeding 30% of the nodes in V, which is a scenario with a
+   committed summary and an edge-based model; this checks the intervention machinery.
+3. **Pulse timing**, with and without the `from = [:S]` filter. Without it the pulse draws its
+   doses from every compartment, so a late pulse spends many of them on infectious and
+   recovered nodes. An earlier version of this page did that, which understated the effect of
+   late pulses and so exaggerated the advantage of early vaccination.
 
-## Setup
+Interventions are not part of a `Scenario` (their hash does not describe them), so the pulse
+ensembles of parts 2 and 3 are simulated on this page (with the scenario's streams) and
+summarised with the same `summarise` code as the committed ensembles.
 
-```{julia}
-using NetworkOutbreaks
-using Graphs
-using StableRNGs
-using Statistics
-using Plots
-```
-
-## Model with vaccination compartment
-
-We define an SIRV model: S → I → R (standard SIR) plus a V
-compartment that vaccination moves susceptibles into.
+## Set-up
 
 ```{julia}
-sirv = OutbreakModel(
-    [:S, :I, :R, :V],
-    [false, true, false, false],
-    [OutbreakTransition(:S, :I, 1/6, :infection; via = [:I]),
-     OutbreakTransition(:I, :R, 0.25, :spontaneous)];
-    name = :SIRV)
-```
+using NetworkEpiCore, NetworkOutbreaks, Catalyst, Plots, Printf, Statistics
+using EdgeBasedModels
+include(joinpath(@__DIR__, "..", "_shared", "scenarios.jl"))    # the vignette-local scenarios
+include(joinpath(@__DIR__, "..", "_shared", "plotstyle.jl"))     # cmp_style, legend_room!, default font sizes
 
-## Baseline: no intervention
-
-```{julia}
-N = 1000
-g = erdos_renyi(N, 5 / (N - 1); rng = StableRNG(42))
-
-spec = OutbreakSpec(model = sirv, network = g,
-    initial = SeedFraction(:I => 0.01),
-    tspan = (0.0, 40.0))
-
-ens_base = simulate_ensemble(spec; nsims = 200, seed = 1, parallel = true)
-t_base, μ_base = mean_curve(ens_base, :I)
-```
-
-## Vaccination pulse at t = 5
-
-We vaccinate 30% of the population at t = 5:
-
-```{julia}
-plan = InterventionPlan([
-    ScheduledStateChange(5.0, :V, 0.30),
-])
-
-ens_vax = simulate_ensemble(spec; nsims = 200, seed = 1,
-    parallel = false, interventions = plan)
-t_vax, μ_vax = mean_curve(ens_vax, :I)
-```
-
-```{julia}
-#| label: fig-vaccination-pulse
-#| fig-cap: "SIR epidemic on ER(1000, 5) with and without a 30% vaccination pulse at t=5."
-plot(t_base, μ_base ./ N, label = "No intervention", lw = 2, color = :red,
-     xlabel = "Time", ylabel = "Infected fraction",
-     title = "Vaccination pulse at t=5 (30% coverage)")
-plot!(t_vax, μ_vax ./ N, label = "30% vaccinated at t=5", lw = 2, color = :blue)
-```
-
-## Varying vaccination timing
-
-```{julia}
-#| label: fig-vaccination-timing
-#| fig-cap: "Earlier vaccination is more effective at reducing the epidemic peak."
-p = plot(t_base, μ_base ./ N, label = "No vax", lw = 2, color = :grey,
-         xlabel = "Time", ylabel = "Infected fraction",
-         title = "Vaccination timing (30% coverage)")
-for (t_v, col) in [(2.0, :green), (5.0, :blue), (10.0, :orange), (15.0, :red)]
-    plan_t = InterventionPlan([ScheduledStateChange(t_v, :V, 0.30)])
-    ens_t = simulate_ensemble(spec; nsims = 200, seed = 1,
-        parallel = false, interventions = plan_t)
-    _, μ_t = mean_curve(ens_t, :I)
-    plot!(p, t_base[1:length(μ_t)], μ_t ./ N,
-          label = "Vax at t=$(Int(t_v))", lw = 2, color = col)
+sirv = @reaction_network sirv begin
+    @parameters τ γ ν
+    τ, S + I --> 2I        # contact: per-contact rate τ
+    γ, I --> R             # recovery
+    ν, S --> V             # vaccination of susceptibles (an exit from the susceptible class)
 end
-p
+model = contact_model(sirv)
 ```
 
-Earlier vaccination is far more effective.
+```{julia}
+sc = scenario(:sir_vax_pois5)          # Poisson(5), τ = 1/6, γ = 1/4, ν = 0.02, 1% seeds in I, t ∈ [0, 60]
+@assert isequivalent(model, sc.model)
+@assert isequivalent(model, sirv_model())
+ref = scenario_summary(sc)
+@printf("N = %d, %d runs, %s: P(major) = %.3f (95%% CI %.3f–%.3f)\n", ref.N, ref.nsims, sc.sim.condition,
+        ref.p_major, ref.p_major_ci...)
+```
+
+## 1. Continuous vaccination
+
+The edge-based model, from the Catalyst network and from the canned `sirv_model()`:
+
+```{julia}
+sys  = edge_based(model, sc.network)
+sysF = edge_based(sirv_model(), ConfigurationNetwork(PoissonDegree(5)))
+@assert vector_fields_equal(symbolic_ode(sys), symbolic_ode(sysF))
+lift_contributions(model, sc.network)
+```
+
+The exit adds −νξ to ξ̇ and moves stubs and nodes from S to V; S = qξψ(θ).
+
+```{julia}
+det = model_curves(sys, solve_epidemic(sys, sc); t = sc.tgrid, label = "edge-based")
+comparisonplot(ref, det; observables = [:I, :V, :cumulative], cmp_style(3)...) |> legend_room!
+```
+
+```{julia}
+tab = compare(ref, det)
+for X in (:I, :V)
+    r = tab["edge-based", X]
+    @printf("%-2s D∞ = %.5f (z∞ = %.2f)\n", X, r.D∞, r.z∞)
+end
+r = tab["edge-based", :I]
+@printf("ΔR∞ = %+.5f, 95%% CI (%+.5f, %+.5f); declared %s\n", r.ΔR∞, r.ΔR∞_ci..., sc.backends[:edge_based])
+```
+
+## 2. A pulse at t = 0 is a seeding of V
+
+The seeded scenario (vignette-local, derived from `:sir_vax_pois5` with ν = 0 and
+`SeedFraction(:I => 0.01, :V => 0.3)`) against the edge-based model with the same seeds
+(q = 1 − 0.01 − 0.3):
+
+```{julia}
+scp  = sirv_pulse0()
+refp = scenario_summary(scp; dir = VIGNETTE_DATA)
+@printf(":%s (hash %s): N = %d, %d runs, %s: P(major) = %.3f (CI %.3f–%.3f)\n", scp.id,
+        first(scenario_hash(scp), 8), refp.N, refp.nsims, scp.sim.condition, refp.p_major, refp.p_major_ci...)
+sysp = edge_based(model, scp.network)
+detp = model_curves(sysp, solve_epidemic(sysp, scp); t = scp.tgrid, label = "edge-based, 30% in V at t = 0")
+comparisonplot(refp, detp; observables = [:I, :cumulative], cmp_style(2)...) |> legend_room!
+```
+
+```{julia}
+rp = compare(refp, detp)["edge-based, 30% in V at t = 0", :I]
+@printf("D∞(I) = %.5f (z∞ = %.2f); ΔR∞ = %+.5f, 95%% CI (%+.5f, %+.5f)\n", rp.D∞, rp.z∞, rp.ΔR∞, rp.ΔR∞_ci...)
+```
+
+Now the intervention: the same model (ν = 0) seeded with 1% in I only, and a pulse at t = 0 that
+moves 0.3·N = 3000 susceptible nodes, chosen uniformly, to V. The runs use the scenario's graphs
+and streams (`seed = base_seed`), so the graphs are those of the committed ensemble.
+
+```{julia}
+# the in-page scenario: `scp` without the V seeds (its runs are summarised; the pulse is not in its hash)
+sc_int = derive(scp; id = :sirv_pulse_inpage, initial = SeedFraction(:I => 0.01))
+function pulse_ensemble(t0; filtered = true, frac = PULSE_FRACTION)
+    iv = filtered ? ScheduledStateChange(t0, :V, frac; from = [:S]) : ScheduledStateChange(t0, :V, frac)
+    ens = simulate(sc_int.model, sc_int.network; N = sc_int.sim.N, p = sc_int.params, initial = sc_int.initial,
+                   tspan = sc_int.tspan, nsims = sc_int.sim.nsims, seed = sc_int.sim.base_seed, keep = :events,
+                   interventions = InterventionPlan([iv]), parallel = Threads.nthreads() > 1)
+    return ens, summarise(scenario_ensemble(sc_int, ens.trajectories))
+end
+ens0, sum0 = pulse_ensemble(0.0)
+fs_a = refp.final_size[refp.major]; fs_b = sum0.final_size[sum0.major]
+se(x) = std(x) / sqrt(length(x))
+z = (mean(fs_b) - mean(fs_a)) / sqrt(se(fs_a)^2 + se(fs_b)^2)
+@printf("final size (major runs): seeded V %.5f ± %.5f, pulse at t = 0 %.5f ± %.5f (± 1.96 SE); z = %.2f\n",
+        mean(fs_a), 1.96se(fs_a), mean(fs_b), 1.96se(fs_b), z)
+dI = sum0.cond[:I].mean .- refp.cond[:I].mean
+seI = sqrt.(sum0.cond[:I].se .^ 2 .+ refp.cond[:I].se .^ 2)
+@printf("max_t |ΔI| between the two ensemble means = %.5f; max_t |ΔI|/SE = %.2f\n",
+        maximum(abs.(dI)), maximum(abs.(dI) ./ max.(seI, 1e-4)))
+```
+
+The two are independent ensembles of the same process, so these differences are Monte Carlo
+error: a |z| of the final sizes below about 2 is expected, and the pointwise maximum over the
+241 grid times of the standardised difference of the means is naturally larger than a single
+|z|.
+
+## 3. Pulse timing, and the `from` filter
+
+Pulses of 30% of the population at t₀ ∈ {0, 5, 10, 15}, with `from = [:S]` (only susceptibles
+are vaccinated) and without it (every compartment is eligible, as the earlier version of this
+page did). The baseline is the committed `:sir_pois5` ensemble (the same network, rates and
+seeds, without vaccination).
+
+```{julia}
+base = scenario_summary(:sir_pois5)
+fsb = base.final_size[base.major]
+@printf("baseline :sir_pois5: final size %.4f ± %.4f (%d major of %d runs)\n", mean(fsb), 1.96se(fsb),
+        base.n_major, base.nsims)
+om = OutbreakModel(sc_int.model, sc_int.params; network = sc_int.network)
+# nodes of compartment X moved into V by the pulse: the count just before t0 minus the count at t0 (the pulse is
+# applied at t0; for t0 = 0 the first snapshot is the seeded state before it)
+function moved(ens, t0, X)
+    k = om.index_of[X]
+    mean(begin
+             jpre = t0 == 0 ? 1 : findlast(<(t0), traj.times)
+             jpost = findlast(<=(t0), traj.times)
+             traj.counts[k, jpre] - traj.counts[k, jpost]
+         end for traj in ens.trajectories)
+end
+timing = []
+for t0 in (0.0, 5.0, 10.0, 15.0), filtered in (true, false)
+    ens, s = pulse_ensemble(t0; filtered)
+    f = s.final_size[s.major]
+    push!(timing, (t0 = t0, filtered = filtered, s = s, fs = mean(f), ci = 1.96se(f), movedI = moved(ens, t0, :I),
+                   movedR = moved(ens, t0, :R), p = s.p_major))
+end
+@printf("%5s %-6s %11s %10s %13s %13s %9s\n", "t₀", "from", "final size", "± 1.96 SE", "I → V (mean)", "R → V (mean)",
+        "P(major)")
+for x in timing
+    @printf("%5.1f %-6s %11.4f %10.4f %13.1f %13.1f %9.3f\n", x.t0, x.filtered ? "[:S]" : "all", x.fs, x.ci,
+            x.movedI, x.movedR, x.p)
+end
+```
+
+```{julia}
+plt = plot(base.t, base.cond[:I].mean; ribbon = 1.96 .* base.cond[:I].se, lw = 2, color = :black,
+           label = "no vaccination (:sir_pois5), mean ± 1.96 SE", xlabel = "t", ylabel = "I (fraction)",
+           title = "30% pulse from S at t₀ (mean ± 1.96 SE, major runs)")
+for (x, c) in zip(filter(x -> x.filtered, timing), (:forestgreen, :royalblue, :darkorange, :firebrick))
+    plot!(plt, x.s.t, x.s.cond[:I].mean; ribbon = 1.96 .* x.s.cond[:I].se, lw = 2, color = c,
+          label = "pulse at t₀ = $(Int(x.t0))")
+end
+plt
+```
+
+The reduction of the final size by the pulse, relative to the baseline, with and without the
+filter:
+
+```{julia}
+for t0 in (0.0, 5.0, 10.0, 15.0)
+    a = only(x for x in timing if x.t0 == t0 && x.filtered)
+    b = only(x for x in timing if x.t0 == t0 && !x.filtered)
+    @printf("t₀ = %4.1f: reduction %.4f (from = [:S]) vs %.4f (all compartments): the unfiltered pulse loses %.4f\n",
+            t0, mean(fsb) - a.fs, mean(fsb) - b.fs, b.fs - a.fs)
+end
+```
+
+At t₀ = 0 the two pulses differ only through the 1% seeds, and their final sizes agree within
+the Monte Carlo error. Later, the unfiltered pulse spends a growing share of its 3000 doses on
+infectious and recovered nodes (the table above), so it vaccinates fewer susceptibles and loses
+part of the effect.
+
+## Reproducibility
+
+```{julia}
+for s in (sc, scp, scenario(:sir_pois5))
+    @printf(":%s hash %s\n", s.id, first(scenario_hash(s), 8))
+end
+println("in-page ensembles: ", sc_int.sim.nsims, " runs each, base seed ", sc_int.sim.base_seed,
+        "; Julia ", VERSION, ", threads ", Threads.nthreads())
+```

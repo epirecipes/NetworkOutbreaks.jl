@@ -36,19 +36,37 @@ Comparison with CompositionRejection:
   amortised when rates are well-clustered.  HAS is preferred for large N
   (≥ 10^4) or highly heterogeneous degree distributions (power-law networks).
 
-Integration with TimeVaryingNetwork:
-  A graph update (add/remove edge) affects hazards for the two endpoint nodes
-  only → 2 × O(log N) tree updates per graph-update event.  HAS does not
-  store per-channel waiting times, so edge updates are handled naturally: the
-  Δt drawn before the update is discarded, and the next randexp() draw uses
-  the freshly updated total rate Λ.
+Scheduled events (TimeVaryingNetwork updates and interventions):
+  A graph update affects the hazards of its two endpoints only (2 × O(log N)
+  tree updates); a state change affects the moved nodes and their neighbours;
+  a rate change recomputes every leaf.  HAS does not store per-channel waiting
+  times, so the Δt drawn before a scheduled event is discarded and the next
+  randexp() draw uses the updated total rate Λ (exact by memorylessness).
+  Network updates and interventions are merged into one time-ordered queue,
+  and the run does not stop at Λ = 0 while any of them is pending.
 
 Per-node hazard:
-  Reuses _cr_total_hazard from composition_rejection.jl (included before
-  has.jl in NetworkOutbreaks.jl) — option (a): direct call, no refactoring.
+  `_cr_total_hazard` (composition_rejection.jl): the spontaneous rate plus the
+  shared contact hazard of algorithms/common.jl.
 
 See  docs/HAS_PLAN.md  for the full implementation roadmap.
 See  https://github.com/KleistLab/HAS  for the reference Cython implementation.
+Multiplex networks (`MultiplexGraph`, WP26):
+  the leaf hazard uses the shared layer-weighted contact hazard (transition j
+  acts through layer ℓ at the (layer × contact) rate
+  rates[j]·[layer_j ∈ (:all, name_ℓ)]·layer_rates[ℓ], as in DirectSSA), and after an event the neighbours in every layer of
+  positive weight are refreshed (a neighbour in several layers is recomputed
+  once per layer, which is idempotent).
+
+Graph processes (`DynamicGraph`, src/processes/, WP26):
+  the total rate is Λ = tree[1] + λ_p, where λ_p is the process rate (re-read
+  at every step). With probability λ_p/Λ the event is a process event: it
+  changes the run's own copy of the graph, and the leaves of the (at most four,
+  for neighbour exchange) nodes whose neighbourhoods changed are recomputed.
+  Once no catalyst is left and no spontaneous transition or intervention can
+  fire, the run ends (the graph can no longer change the epidemic). Without a
+  process λ_p = 0 and no extra random number is drawn, so static runs are
+  unchanged.
 =#
 
 """
@@ -64,11 +82,14 @@ each at O(log N) cost, giving O(Δ log N) total.  For fixed-degree graphs
 heterogeneity — a deterministic guarantee that `CompositionRejection`
 provides only in the amortised sense.
 
-Supports `TimeVaryingNetwork`.
+Supports static, time-varying (`TimeVaryingNetwork`) and multiplex (`MultiplexGraph`) networks, graph processes
+(`DynamicGraph`, e.g. neighbour exchange) and interventions.
 
 See `docs/HAS_PLAN.md` for design details.
 """
 struct HAS <: OutbreakAlgorithm end
+
+_supports_interventions(::HAS) = true
 
 # ---------------------------------------------------------------------------
 # Binary-tree helpers
@@ -113,8 +134,8 @@ function _has_sample_node(tree::Vector{Float64}, N_tree::Int, n::Int,
         end
     end
     # Convert leaf tree-index back to 1-indexed node number. Padding leaves
-    # carry zero hazard and should be unreachable; return 0 defensively rather
-    # than biasing the final real node if floating-point drift ever reaches one.
+    # carry zero hazard and are unreachable (see the caller); return 0 rather
+    # than biasing the final real node, and let the caller raise an error.
     v = k - N_tree + 1
     return v <= n ? v : 0
 end
@@ -123,184 +144,143 @@ end
 # Main simulation
 # ---------------------------------------------------------------------------
 
-function _simulate_impl(::HAS, spec::OutbreakSpec, seed::UInt64, keep::Symbol, interventions::InterventionPlan = InterventionPlan())
-    rng     = Xoshiro(seed)
-    model   = spec.model
-    network = spec.network
+# Recompute node v's hazard and propagate it up the tree.
+@inline function _has_refresh!(tree::Vector{Float64}, node_hazard::Vector{Float64}, N_tree::Int,
+                               tally::Vector{Float64}, v::Integer, layers, weights,
+                               node_state::Vector{Int}, rm::_RunModel)
+    h = _cr_total_hazard(tally, v, layers, weights, node_state, rm)
+    node_hazard[v] = h
+    _has_update!(tree, _has_leaf(Int(v), N_tree), h)
+    return nothing
+end
 
-    network isa MultiplexNetwork &&
-        throw(ArgumentError("HAS does not yet support MultiplexNetwork; use DirectSSA"))
+# Node v changed compartment: refresh it and its neighbours in every layer that carries weight (one layer for a
+# single graph, in the graph's neighbour order).
+function _has_refresh_node!(tree, node_hazard, N_tree, tally, v::Integer, layers, weights,
+                            node_state::Vector{Int}, rm::_RunModel)
+    _has_refresh!(tree, node_hazard, N_tree, tally, v, layers, weights, node_state, rm)
+    for l in eachindex(layers)
+        weights[l] > 0 || continue
+        for u in neighbors(layers[l], v)
+            _has_refresh!(tree, node_hazard, N_tree, tally, u, layers, weights, node_state, rm)
+        end
+    end
+    return nothing
+end
 
-    # Time-varying network support (mirrors next_reaction.jl / direct.jl).
-    is_tvn          = network isa TimeVaryingNetwork
-    g               = is_tvn ? deepcopy(network.graph) : _outbreak_graph(network)
-    updates         = is_tvn ? network.updates : nothing
-    next_update_idx = 1
+function _has_after_intervention!(tree, node_hazard, N_tree, tally, touched, layers, weights,
+                                  node_state::Vector{Int}, rm::_RunModel, n::Int)
+    if touched === nothing           # rates changed: recompute every leaf
+        for v in 1:n
+            _has_refresh!(tree, node_hazard, N_tree, tally, v, layers, weights, node_state, rm)
+        end
+    else
+        for v in touched
+            _has_refresh_node!(tree, node_hazard, N_tree, tally, v, layers, weights, node_state, rm)
+        end
+    end
+    return nothing
+end
 
+function _simulate_impl(::HAS, spec::OutbreakSpec, rng::AbstractRNG, seed::_RecordedSeed, keep::Symbol,
+                        plan::InterventionPlan = InterventionPlan())
+    g, layers, weights, updates = _prepare_network(spec.network)
+    return _has_run(spec, rng, seed, keep, plan, g, layers, weights, updates, nothing)
+end
+
+function _simulate_impl(::HAS, spec::OutbreakSpec{<:DynamicGraph}, rng::AbstractRNG, seed::_RecordedSeed, keep::Symbol,
+                        plan::InterventionPlan = InterventionPlan())
+    g, proc = _prepare_dynamic(spec.network, rng)
+    return _has_run(spec, rng, seed, keep, plan, g, (g,), (1.0,), nothing, proc)
+end
+
+# Function barrier: the loop is compiled for the concrete graph, layer and process types (`proc === nothing` when
+# the network has no graph process).
+function _has_run(spec::OutbreakSpec, rng::AbstractRNG, seed::_RecordedSeed, keep::Symbol, plan::InterventionPlan,
+                  g, layers, weights, updates, proc)
     n = nv(g)
-    C = ncompartments(model)
 
+    rm = _RunModel(spec.model, spec.network)
     node_state = initial_state(spec, rng)
-    state      = OutbreakState(model, node_state)
+    state = _initial_outbreak_state(rm, node_state)
+    tally = _tally_buffer(rm)
 
-    # Pre-bucket transitions by source compartment and type.
-    spont_by_src     = [OutbreakTransition[] for _ in 1:C]
-    infection_by_src = [OutbreakTransition[] for _ in 1:C]
-    for tr in model.transitions
-        src_idx = model.index_of[tr.from]
-        if tr.type == :spontaneous
-            push!(spont_by_src[src_idx], tr)
-        else
-            push!(infection_by_src[src_idx], tr)
-        end
-    end
-
-    spont_total_rate = zeros(Float64, C)
-    for i in 1:C
-        spont_total_rate[i] = sum((tr.rate for tr in spont_by_src[i]); init = 0.0)
-    end
-
-    via_mask = Dict{OutbreakTransition, BitVector}()
-    for tr in model.transitions
-        tr.type == :infection || continue
-        mask = falses(C)
-        if isempty(tr.via)
-            for i in 1:C
-                model.infectious[i] && (mask[i] = true)
-            end
-        else
-            for sym in tr.via
-                mask[model.index_of[sym]] = true
-            end
-        end
-        via_mask[tr] = mask
-    end
-
-    # --- Build binary sum tree (O(n log n)) ---
-    # N_tree = smallest power of 2 ≥ n.  Inactive leaf slots hold 0.0.
+    # --- binary sum tree: N_tree = smallest power of 2 ≥ n; padding leaves hold 0.0 ---
     N_tree      = nextpow(2, max(n, 1))
     tree        = zeros(Float64, 2 * N_tree)
     node_hazard = zeros(Float64, n)
-
-    # Populate leaf level.
     for v in 1:n
-        h = _cr_total_hazard(v, g, model, node_state, spont_total_rate,
-                             infection_by_src, via_mask)
-        node_hazard[v]           = h
+        h = _cr_total_hazard(tally, v, layers, weights, node_state, rm)
+        node_hazard[v] = h
         tree[_has_leaf(v, N_tree)] = h
     end
-    # Fold partial sums up from leaves to root.
     for k in (N_tree - 1):-1:1
         @inbounds tree[k] = tree[2k] + tree[2k + 1]
     end
 
     t_now = spec.tspan[1]
     t_end = spec.tspan[2]
+    rec = _Recorder(keep)
+    _record!(rec, t_now, state.counts)
+    sched = _Schedule(updates, plan, t_now)
+    on_change = touched ->
+        _has_after_intervention!(tree, node_hazard, N_tree, tally, touched, layers, weights,
+                                 node_state, rm, n)
+    on_update = upd -> for v in (upd.src, upd.dst)
+        _has_refresh!(tree, node_hazard, N_tree, tally, v, layers, weights, node_state, rm)
+    end
+    _check_thresholds!(sched, state, rm, n, rng, on_change) && _record!(rec, t_now, state.counts)
 
-    times_buf  = Float64[t_now]
-    counts_buf = Vector{Vector{Int}}()
-    push!(counts_buf, copy(state.counts))
-    events_buf = OutbreakEvent[]
+    while true
+        λ_p = _proc_rate(proc)       # graph-process rate (0 without a process)
+        Λ = tree[1] + λ_p
+        t_next = Λ > 0.0 ? t_now + randexp(rng) / Λ : Inf
 
-    while t_now < t_end
-        Λ = tree[1]
-        Λ <= 0.0 && break  # absorbing state
-
-        Δt     = randexp(rng) / Λ
-        t_next = t_now + Δt
-
-        # --- Time-varying network: apply updates that fire before t_next ---
-        if is_tvn
-            t_update = (next_update_idx <= length(updates)) ?
-                       updates[next_update_idx].t : Inf
-            if t_update <= t_next
-                t_now = min(t_update, t_end)
-                t_now >= t_end && break
-                while next_update_idx <= length(updates) &&
-                        updates[next_update_idx].t <= t_now
-                    upd = updates[next_update_idx]
-                    if upd.action == :add
-                        add_edge!(g, upd.src, upd.dst)
-                    else
-                        rem_edge!(g, upd.src, upd.dst)
-                    end
-                    # Only the two endpoints' infection hazards are affected.
-                    for v in (upd.src, upd.dst)
-                        h = _cr_total_hazard(v, g, model, node_state,
-                                             spont_total_rate,
-                                             infection_by_src, via_mask)
-                        node_hazard[v] = h
-                        _has_update!(tree, _has_leaf(v, N_tree), h)
-                    end
-                    next_update_idx += 1
-                end
-                # Discard Δt drawn under the old graph; redraw next iteration.
-                continue
+        # --- scheduled network updates and interventions come first when due (M4, M5) ---
+        t_sched = _next_scheduled_time(sched)
+        if t_sched <= t_next
+            (isfinite(t_sched) && t_sched <= t_end) || break
+            if !(Λ > 0.0) && !_interventions_pending(sched) && _no_catalysts(rm, state.counts)
+                break     # absorbing: no hazard can ever become positive
             end
+            t_now = t_sched
+            if _apply_due!(sched, t_now, g, state, rm, n, rng, on_update, on_change)
+                _record!(rec, t_now, state.counts)
+                _check_thresholds!(sched, state, rm, n, rng, on_change) && _record!(rec, t_now, state.counts)
+            end
+            continue    # the Δt drawn under the old rates is discarded (memorylessness)
         end
-
-        t_next > t_end && break
+        (isfinite(t_next) && t_next <= t_end) || break
         t_now = t_next
 
-        # --- Sample firing node via tree descent ---
+        # --- a graph-process event with probability λ_p/Λ (no draw without a process) ---
+        if λ_p > 0.0 && rand(rng) * Λ < λ_p
+            _epidemic_absorbing(rm, state.counts, sched) && break
+            for v in _process_fire!(proc, g, node_state, rng)
+                _has_refresh!(tree, node_hazard, N_tree, tally, v, layers, weights, node_state, rm)
+            end
+            continue
+        end
+
+        # --- firing node by tree descent, then the transition ---
         fired_node = _has_sample_node(tree, N_tree, n, rng)
-        fired_node == 0 && break  # defensive: absorbing state
-
-        # --- Sample which transition fires (spontaneous vs infection) ---
-        src_idx = node_state[fired_node]
-        spont_h = spont_total_rate[src_idx]
-        fired_tr = if rand(rng) * node_hazard[fired_node] < spont_h
-            _sample_spontaneous_transition(spont_by_src[src_idx], rng)
+        # Unreachable: parents are recomputed exactly as left + right, so a zero-sum subtree (padding) is never
+        # entered while the root is positive. Fail loudly rather than silently ending the run.
+        fired_node == 0 && error("HAS: sampled a zero-hazard leaf with total hazard $(tree[1]) (internal error)")
+        c = node_state[fired_node]
+        fired_j = if rand(rng) * node_hazard[fired_node] < rm.spont_total[c]
+            _sample_spontaneous_transition(rm, c, rng)
         else
-            _sample_infection_transition(fired_node, g, model, node_state,
-                                         infection_by_src[src_idx], via_mask, rng)
+            _sample_contact_transition!(tally, fired_node, layers, weights, node_state, rm, rng)
         end
 
-        # --- Apply state change ---
-        old_idx = src_idx
-        new_idx = model.index_of[fired_tr.to]
-        node_state[fired_node] = new_idx
-        state.counts[old_idx] -= 1
-        state.counts[new_idx] += 1
-        if model.infectious[new_idx] && !model.infectious[old_idx]
-            state.infection_counts[fired_node] += 1
-        end
+        _fire!(state, rm, fired_node, fired_j)
+        _record!(rec, t_now, state.counts)
+        _log_event!(rec, t_now, fired_j, fired_node)
 
-        push!(times_buf, t_now)
-        push!(counts_buf, copy(state.counts))
-        if keep == :events
-            push!(events_buf,
-                  OutbreakEvent(t_now,
-                                _transition_index(model, fired_tr),
-                                fired_node))
-        end
-
-        # --- Update tree: fired node + its neighbours ---
-        h = _cr_total_hazard(fired_node, g, model, node_state, spont_total_rate,
-                             infection_by_src, via_mask)
-        node_hazard[fired_node] = h
-        _has_update!(tree, _has_leaf(fired_node, N_tree), h)
-
-        for u in neighbors(g, fired_node)
-            h = _cr_total_hazard(u, g, model, node_state, spont_total_rate,
-                                 infection_by_src, via_mask)
-            node_hazard[u] = h
-            _has_update!(tree, _has_leaf(u, N_tree), h)
-        end
+        _has_refresh_node!(tree, node_hazard, N_tree, tally, fired_node, layers, weights, node_state, rm)
+        _check_thresholds!(sched, state, rm, n, rng, on_change) && _record!(rec, t_now, state.counts)
     end
 
-    # Final snapshot at t_end (same convention as other algorithms).
-    if times_buf[end] < t_end
-        push!(times_buf, t_end)
-        push!(counts_buf, copy(state.counts))
-    end
-
-    counts_mat = Matrix{Int}(undef, C, length(times_buf))
-    @inbounds for k in 1:length(times_buf)
-        counts_mat[:, k] = counts_buf[k]
-    end
-
-    return OutbreakTrajectory(model, times_buf, counts_mat,
-                              copy(state.infection_counts),
-                              events_buf, seed, :HAS)
+    return _trajectory(rec, rm, state, t_end, seed, :HAS)
 end

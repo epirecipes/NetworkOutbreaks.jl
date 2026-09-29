@@ -1,0 +1,39 @@
+N = 10000
+algorithm_revision = "2"
+curves_file = "sir_pois5_5seeds_unaligned__0fe91e38.curves.csv"
+id = "sir_pois5_5seeds_unaligned"
+n_major = 990
+nsims = 1000
+observables = ["S", "I", "R", "infectious", "cumulative"]
+p_major = 0.99
+p_major_ci = [0.9816905311296853, 0.9945592455544707]
+runs_file = "sir_pois5_5seeds_unaligned__0fe91e38.runs.csv"
+scenario_hash = "0fe91e38517badc0499e0a28ca6f4267b8c9733c9cded6df500508ea7bd4fb8b"
+statistics = ["mean", "sd", "se", "q025", "q25", "q50", "q75", "q975"]
+summary_format = 1
+uncond_equals_cond = false
+
+[extras.conditioning]
+largest_unselected = 0.0012
+measure = "new infections by t_end (excluding the seeds) / N"
+n_selected = 990
+rule = "MajorOutbreak(0.05)"
+smallest_selected = 0.7672
+
+[extras.sampling]
+algorithm = "NextReaction"
+base_seed = "20260926"
+graphs = "per_run"
+se = "iid (sd/sqrt(n))"
+
+[provenance]
+Graphs = "1.14.0"
+NetworkEpiCore = "0.1.0"
+NetworkOutbreaks = "0.2.0"
+StableRNGs = "1.0.4"
+algorithm = "NextReaction"
+algorithm_revision = "2"
+generator = "NetworkOutbreaks.summarise(scenario_ensemble(sc))"
+julia_version = "1.12.7"
+summary_digits = "mean=6,se=6,sd=5,quantiles=5,times=6"
+summary_revision = "2"

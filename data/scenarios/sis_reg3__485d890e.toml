@@ -1,0 +1,44 @@
+N = 10000
+algorithm_revision = "2"
+curves_file = "sis_reg3__485d890e.curves.csv"
+id = "sis_reg3"
+n_major = 200
+nsims = 200
+observables = ["S", "I", "infectious", "cumulative"]
+p_major = 1.0
+p_major_ci = [0.9811546736227335, 1.0]
+runs_file = "sis_reg3__485d890e.runs.csv"
+scenario_hash = "485d890ec475278147e9d14223e6e69c08388eed8edf25225e8c32565b41b12e"
+statistics = ["mean", "sd", "se", "q025", "q25", "q50", "q75", "q975"]
+summary_format = 1
+uncond_equals_cond = true
+
+[extras.conditioning]
+largest_unselected = nan
+measure = "prevalence (infectious nodes) at t_end / N"
+n_selected = 200
+rule = "Survival()"
+smallest_selected = 0.8063
+
+[extras.reinfection_histogram]
+cond = [0.0, 0.0, 0.0, 1.0e-5, 4.1e-5, 0.000236, 0.00091, 0.002826, 0.007341, 0.015987, 0.030768, 0.050874, 0.074227, 0.097016, 0.114731, 0.122085, 0.117685, 0.104458, 0.085531, 0.06441, 0.044779, 0.029177, 0.017421, 0.009646, 0.005175, 0.002558, 0.001199, 0.000547, 0.000216, 8.6e-5, 3.7e-5, 1.3e-5, 6.0e-6, 2.0e-6, 2.0e-6]
+index = "entry p + 1 is the mean fraction of nodes infected p times"
+uncond = [0.0, 0.0, 0.0, 1.0e-5, 4.1e-5, 0.000236, 0.00091, 0.002826, 0.007341, 0.015987, 0.030768, 0.050874, 0.074227, 0.097016, 0.114731, 0.122085, 0.117685, 0.104458, 0.085531, 0.06441, 0.044779, 0.029177, 0.017421, 0.009646, 0.005175, 0.002558, 0.001199, 0.000547, 0.000216, 8.6e-5, 3.7e-5, 1.3e-5, 6.0e-6, 2.0e-6, 2.0e-6]
+
+[extras.sampling]
+algorithm = "NextReaction"
+base_seed = "20260926"
+graphs = "per_run"
+se = "iid (sd/sqrt(n))"
+
+[provenance]
+Graphs = "1.14.0"
+NetworkEpiCore = "0.1.0"
+NetworkOutbreaks = "0.2.0"
+StableRNGs = "1.0.4"
+algorithm = "NextReaction"
+algorithm_revision = "2"
+generator = "NetworkOutbreaks.summarise(scenario_ensemble(sc))"
+julia_version = "1.12.7"
+summary_digits = "mean=6,se=6,sd=5,quantiles=5,times=6"
+summary_revision = "2"

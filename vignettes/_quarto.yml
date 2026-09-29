@@ -1,5 +1,14 @@
 project:
   type: default
+  # The current pages (the pre-0.2 pages 01_reinfection_validation/ and 02_algorithm_comparison/ were
+  # superseded by 01_sis_reinfection/ and 02_algorithms_dynamic_networks/ and have been removed).
+  render:
+    - 01_sis_reinfection/index.qmd
+    - 02_algorithms_dynamic_networks/index.qmd
+    - 03_interventions/index.qmd
+    - 04_contact_tracing/index.qmd
+    - 05_validation/index.qmd
+    - 06_processes/index.qmd
 
 engine: julia
 
@@ -18,11 +27,31 @@ format:
     theme: cosmo
     embed-resources: true
   pdf:
-    pdf-engine: xelatex
+    # lualatex for the font fallbacks: STIX Two Text has no ≈ → ≤ ∞ ⟨⟩ …, Fira Code no ↦ ⇒ ⋮ ✗.
+    pdf-engine: lualatex
     mainfont: "STIX Two Text"
+    mainfontfallback: ["STIX Two Math:", "Menlo:"]
     mathfont: "STIX Two Math"
     monofont: "Fira Code"
+    monofontfallback: ["STIX Two Math:", "Menlo:"]
+    # the headings are set in the sans font (Latin Modern Sans has no Greek); bold weights: see the header
+    sansfont: "STIX Two Text"
+    sansfontfallback: ["STIX Two Math:", "Menlo:"]
     toc: true
+    # Wrap long code and output lines at the margin instead of cutting them off.
+    include-in-header:
+      text: |
+        \usepackage{fvextra}
+        % STIX Two Text is a variable font: select the bold weight by axis (fontspec does not find it)
+        \setmainfont{STIX Two Text}[RawFeature={fallback=mainfontfallback},
+          BoldFont=*,BoldFeatures={RawFeature={axis={wght=700}}},
+          BoldItalicFont=STIX Two Text Italic,BoldItalicFeatures={RawFeature={axis={wght=700}}}]
+        \setsansfont{STIX Two Text}[RawFeature={fallback=sansfontfallback},
+          BoldFont=*,BoldFeatures={RawFeature={axis={wght=700}}},
+          BoldItalicFont=STIX Two Text Italic,BoldItalicFeatures={RawFeature={axis={wght=700}}}]
+        \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
+        \let\verbatim\relax\let\endverbatim\relax
+        \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
   gfm:
     toc: true
 

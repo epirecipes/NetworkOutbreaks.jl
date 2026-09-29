@@ -1,225 +1,222 @@
 #=
-Gibson--Bruck next-reaction method with node-level channels.
+algorithms/next_reaction.jl (owner: WP26, after WP3)
 
-Each node owns up to two reaction channels: a spontaneous channel whose
-hazard is the sum of all spontaneous transitions out of the node's current
-compartment, and an infection channel whose hazard sums infection pressure
-from infectious neighbours. Infection channels are node-level aggregates; on
-firing, the concrete transition is sampled from the contributing hazards.
+Gibson–Bruck next-reaction method with node-level channels.
+
+Each node owns two reaction channels: a spontaneous channel whose hazard is the sum of the spontaneous rates out of
+the node's compartment, and a contact channel whose hazard is the node's total contact hazard (the shared definition
+in `algorithms/common.jl`, which covers `:infection` and `:contact_trace` with catalysts named by `via`). The
+channels' absolute firing times live in a mutable binary min-heap. When a channel fires, the concrete transition is
+chosen in proportion to the contributing hazards.
+
+After an event the fired node's channels get fresh exponential clocks (its compartment, and so its channel identity,
+changed), and the contact channels of its neighbours are rescaled with the Gibson–Bruck identity
+t_new = t + (a_old / a_new)(t_old − t). Network updates rescale the two endpoints; a rate change rescales every
+channel; a state change gives fresh clocks to the moved nodes and rescales their neighbours. All of these are exact.
+
+Multiplex networks (`MultiplexGraph`, design §C.3, WP26): the contact hazard is the shared layer-weighted one, so
+contact transition j acts through layer ℓ at the (layer × contact) rate
+`rates[j] · [layer_j ∈ (:all, name_ℓ)] · layer_rates[ℓ]` (a transition on a named layer acts on that layer only),
+exactly as in DirectSSA. After an event the neighbours of the fired node in every layer of positive weight are rescaled. A
+neighbour linked in several layers is visited once per layer; the rescaling is idempotent (an unchanged hazard keeps
+its clock and draws no random number), so this is exact.
+
+Graph processes (`DynamicGraph`, src/processes/, WP26): one more channel, whose hazard is the process rate. When it
+fires, the process changes the run's own copy of the graph and returns the nodes whose neighbourhoods changed (at
+most four for neighbour exchange); their contact channels are rescaled and the process channel gets a fresh clock.
+The process rate is re-read after every event (Gibson–Bruck again, so a rate that depends on the state stays exact).
+Once no catalyst is left and no spontaneous transition or intervention can fire, nothing the graph does can change
+the epidemic, and the run ends there (the final snapshot is recorded at the end of the time span as usual).
 =#
 
+"""
+    NextReaction <: OutbreakAlgorithm
+
+Gibson–Bruck next-reaction method with two channels per node (spontaneous and contact) in a binary heap: O(k̄ log N)
+per event. Supports static, time-varying (`TimeVaryingNetwork`) and multiplex (`MultiplexGraph`) networks, graph
+processes (`DynamicGraph`, e.g. neighbour exchange, with one more channel for the process events) and
+interventions.
+"""
 struct NextReaction <: OutbreakAlgorithm end
+
+_supports_interventions(::NextReaction) = true
 
 const _SPONTANEOUS_CHANNEL = 1
 const _INFECTION_CHANNEL = 2
 
-function _simulate_impl(::NextReaction, spec::OutbreakSpec, seed::UInt64, keep::Symbol, interventions::InterventionPlan = InterventionPlan())
-    rng = Xoshiro(seed)
-    model = spec.model
-    network = spec.network
+# Channel storage for one run: 2n node channels and one graph-process channel (event id 2n + 1).
+struct _NRChannels
+    heap::MutableBinaryMinHeap{Tuple{Float64, Int}}
+    handles::Vector{Int}
+    hazards::Vector{Float64}
+    times::Vector{Float64}
+    tally::Vector{Float64}
+    n::Int
+end
 
-    network isa MultiplexNetwork &&
-        throw(ArgumentError("NextReaction does not yet support MultiplexNetwork; use DirectSSA"))
+_NRChannels(n::Int, rm::_RunModel) =
+    _NRChannels(MutableBinaryMinHeap{Tuple{Float64, Int}}(), zeros(Int, 2n + 1), zeros(Float64, 2n + 1),
+                fill(Inf, 2n + 1), _tally_buffer(rm), n)
 
-    # Time-varying network support
-    is_tvn = network isa TimeVaryingNetwork
-    g = is_tvn ? deepcopy(network.graph) : _outbreak_graph(network)
-    updates = is_tvn ? network.updates : nothing
-    next_update_idx = 1
+function _simulate_impl(::NextReaction, spec::OutbreakSpec, rng::AbstractRNG, seed::_RecordedSeed, keep::Symbol,
+                        plan::InterventionPlan = InterventionPlan())
+    g, layers, weights, updates = _prepare_network(spec.network)
+    return _nr_run(spec, rng, seed, keep, plan, g, layers, weights, updates, nothing)
+end
 
+function _simulate_impl(::NextReaction, spec::OutbreakSpec{<:DynamicGraph}, rng::AbstractRNG, seed::_RecordedSeed,
+                        keep::Symbol, plan::InterventionPlan = InterventionPlan())
+    g, proc = _prepare_dynamic(spec.network, rng)
+    return _nr_run(spec, rng, seed, keep, plan, g, (g,), (1.0,), nothing, proc)
+end
+
+# Function barrier: the loop is compiled for the concrete graph, layer and process types (`proc === nothing` when
+# the network has no graph process).
+function _nr_run(spec::OutbreakSpec, rng::AbstractRNG, seed::_RecordedSeed, keep::Symbol, plan::InterventionPlan,
+                 g, layers, weights, updates, proc)
     n = nv(g)
-    C = ncompartments(model)
 
+    rm = _RunModel(spec.model, spec.network)
     node_state = initial_state(spec, rng)
-    state = OutbreakState(model, node_state)
-
-    spont_by_src = [OutbreakTransition[] for _ in 1:C]
-    infection_by_src = [OutbreakTransition[] for _ in 1:C]
-    for tr in model.transitions
-        src_idx = model.index_of[tr.from]
-        if tr.type == :spontaneous
-            push!(spont_by_src[src_idx], tr)
-        else
-            push!(infection_by_src[src_idx], tr)
-        end
-    end
-
-    spont_total_rate = zeros(Float64, C)
-    for i in 1:C
-        spont_total_rate[i] = sum((tr.rate for tr in spont_by_src[i]); init = 0.0)
-    end
-
-    via_mask = Dict{OutbreakTransition, BitVector}()
-    for tr in model.transitions
-        tr.type == :infection || continue
-        mask = falses(C)
-        if isempty(tr.via)
-            for i in 1:C
-                model.infectious[i] && (mask[i] = true)
-            end
-        else
-            for sym in tr.via
-                mask[model.index_of[sym]] = true
-            end
-        end
-        via_mask[tr] = mask
-    end
-
-    n_channels = 2n
-    heap = MutableBinaryMinHeap{Tuple{Float64, Int}}()
-    handles = zeros(Int, n_channels)
-    hazards = zeros(Float64, n_channels)
-    scheduled_times = fill(Inf, n_channels)
+    state = _initial_outbreak_state(rm, node_state)
+    ch = _NRChannels(n, rm)
 
     t_now = spec.tspan[1]
     t_end = spec.tspan[2]
+    rec = _Recorder(keep)
+    _record!(rec, t_now, state.counts)
+    sched = _Schedule(updates, plan, t_now)
 
     for v in 1:n
-        _refresh_spontaneous_channel!(heap, handles, hazards, scheduled_times,
-                                      v, node_state, spont_total_rate, t_now, rng;
-                                      fresh = true)
-        _refresh_infection_channel!(heap, handles, hazards, scheduled_times,
-                                    v, g, model, node_state, infection_by_src,
-                                    via_mask, t_now, rng; fresh = true)
+        _nr_refresh_spontaneous!(ch, v, rm, node_state, t_now, rng; fresh = true)
+        _nr_refresh_contact!(ch, v, layers, weights, rm, node_state, t_now, rng; fresh = true)
+    end
+    _nr_refresh_process!(ch, proc, t_now, rng; fresh = true)
+    let t = t_now
+        on_change = touched -> _nr_after_intervention!(ch, touched, layers, weights, rm, node_state, proc, t, rng)
+        _check_thresholds!(sched, state, rm, n, rng, on_change) && _record!(rec, t_now, state.counts)
     end
 
-    times_buf  = Float64[t_now]
-    counts_buf = Vector{Vector{Int}}()
-    push!(counts_buf, copy(state.counts))
-    events_buf = OutbreakEvent[]
+    while true
+        t_next, event_id = isempty(ch.heap) ? (Inf, 0) : first(ch.heap)
 
-    while t_now < t_end
-        isempty(heap) && break
-        t_next, event_id = first(heap)
-        isfinite(t_next) || break
-
-        # --- time-varying network: apply any graph updates before the next reaction ---
-        if is_tvn
-            t_update = (next_update_idx <= length(updates)) ?
-                       updates[next_update_idx].t : Inf
-            if t_update <= t_next
-                t_now = min(t_update, t_end)
-                t_now >= t_end && break
-                while next_update_idx <= length(updates) &&
-                        updates[next_update_idx].t <= t_now
-                    upd = updates[next_update_idx]
-                    if upd.action == :add
-                        add_edge!(g, upd.src, upd.dst)
-                    else
-                        rem_edge!(g, upd.src, upd.dst)
-                    end
-                    # Reschedule infection channels for both endpoints using the
-                    # Gibson–Bruck identity (fresh = false preserves old random clock).
-                    for v in (upd.src, upd.dst)
-                        _refresh_infection_channel!(heap, handles, hazards, scheduled_times,
-                                                    v, g, model, node_state,
-                                                    infection_by_src, via_mask, t_now, rng;
-                                                    fresh = false)
-                    end
-                    next_update_idx += 1
-                end
-                continue  # re-peek the heap with rescheduled channels
+        # --- scheduled network updates and interventions come first when due (M4, M5) ---
+        t_sched = _next_scheduled_time(sched)
+        if t_sched <= t_next
+            (isfinite(t_sched) && t_sched <= t_end) || break
+            if !isfinite(t_next) && !_interventions_pending(sched) && _no_catalysts(rm, state.counts)
+                break     # absorbing: no hazard can ever become positive
             end
+            t_now = t_sched
+            let t = t_now
+                on_update = upd -> for v in (upd.src, upd.dst)
+                    _nr_refresh_contact!(ch, v, layers, weights, rm, node_state, t, rng; fresh = false)
+                end
+                on_change = touched ->
+                    _nr_after_intervention!(ch, touched, layers, weights, rm, node_state, proc, t, rng)
+                if _apply_due!(sched, t, g, state, rm, n, rng, on_update, on_change)
+                    _record!(rec, t, state.counts)
+                    _check_thresholds!(sched, state, rm, n, rng, on_change) && _record!(rec, t, state.counts)
+                end
+            end
+            continue
         end
-
-        if t_next > t_end
-            break
-        end
+        (isfinite(t_next) && t_next <= t_end) || break
         t_now = t_next
 
+        # --- a graph-process event: rewire, rescale the touched nodes, fresh clock for the process ---
+        if event_id == _process_event_id(n)
+            _epidemic_absorbing(rm, state.counts, sched) && break
+            for v in _process_fire!(proc, g, node_state, rng)
+                _nr_refresh_contact!(ch, v, layers, weights, rm, node_state, t_now, rng; fresh = false)
+            end
+            _nr_refresh_process!(ch, proc, t_now, rng; fresh = true)
+            continue
+        end
+
+        # --- fire ---
         fired_node = _channel_node(event_id, n)
-        fired_kind = _channel_kind(event_id, n)
-        src_idx = node_state[fired_node]
-        fired_tr = if fired_kind == _SPONTANEOUS_CHANNEL
-            _sample_spontaneous_transition(spont_by_src[src_idx], rng)
+        c = node_state[fired_node]
+        fired_j = if _channel_kind(event_id, n) == _SPONTANEOUS_CHANNEL
+            _sample_spontaneous_transition(rm, c, rng)
         else
-            _sample_infection_transition(fired_node, g, model, node_state,
-                                         infection_by_src[src_idx], via_mask, rng)
+            _sample_contact_transition!(ch.tally, fired_node, layers, weights, node_state, rm, rng)
         end
+        _fire!(state, rm, fired_node, fired_j)
+        _record!(rec, t_now, state.counts)
+        _log_event!(rec, t_now, fired_j, fired_node)
 
-        old_idx = src_idx
-        new_idx = model.index_of[fired_tr.to]
-        node_state[fired_node] = new_idx
-        state.counts[old_idx] -= 1
-        state.counts[new_idx] += 1
-        if model.infectious[new_idx] && !model.infectious[old_idx]
-            state.infection_counts[fired_node] += 1
-        end
-
-        push!(times_buf, t_now)
-        push!(counts_buf, copy(state.counts))
-        if keep == :events
-            push!(events_buf,
-                  OutbreakEvent(t_now,
-                                _transition_index(model, fired_tr),
-                                fired_node))
-        end
-
-        # The fired node changed compartment, so its node-level channel identities
-        # are rebuilt with fresh exponential clocks. Neighbour infection hazards
-        # changed only because one adjacent catalyst state changed, so the
-        # Gibson--Bruck rescheduling identity preserves their old random clocks.
-        _refresh_spontaneous_channel!(heap, handles, hazards, scheduled_times,
-                                      fired_node, node_state, spont_total_rate,
-                                      t_now, rng; fresh = true)
-        _refresh_infection_channel!(heap, handles, hazards, scheduled_times,
-                                    fired_node, g, model, node_state,
-                                    infection_by_src, via_mask, t_now, rng;
-                                    fresh = true)
-        for u in neighbors(g, fired_node)
-            _refresh_infection_channel!(heap, handles, hazards, scheduled_times,
-                                        u, g, model, node_state,
-                                        infection_by_src, via_mask, t_now, rng;
-                                        fresh = false)
+        _nr_refresh_node!(ch, fired_node, layers, weights, rm, node_state, t_now, rng)
+        _nr_refresh_process!(ch, proc, t_now, rng; fresh = false)
+        if !isempty(sched.thresholds)
+            let t = t_now
+                on_change = touched ->
+                    _nr_after_intervention!(ch, touched, layers, weights, rm, node_state, proc, t, rng)
+                _check_thresholds!(sched, state, rm, n, rng, on_change) && _record!(rec, t, state.counts)
+            end
         end
     end
 
-    if times_buf[end] < t_end
-        push!(times_buf, t_end)
-        push!(counts_buf, copy(state.counts))
-    end
-
-    counts_mat = Matrix{Int}(undef, C, length(times_buf))
-    @inbounds for k in 1:length(times_buf)
-        counts_mat[:, k] = counts_buf[k]
-    end
-
-    return OutbreakTrajectory(model, times_buf, counts_mat,
-                              copy(state.infection_counts),
-                              events_buf, seed, :NextReaction)
+    return _trajectory(rec, rm, state, t_end, seed, :NextReaction)
 end
 
 # --- channel bookkeeping ---
 
 _spontaneous_event_id(v::Integer) = Int(v)
 _infection_event_id(v::Integer, n::Integer) = Int(n + v)
+_process_event_id(n::Integer) = Int(2n + 1)
 _channel_kind(event_id::Integer, n::Integer) = event_id <= n ? _SPONTANEOUS_CHANNEL : _INFECTION_CHANNEL
 _channel_node(event_id::Integer, n::Integer) = event_id <= n ? Int(event_id) : Int(event_id - n)
 
-function _refresh_spontaneous_channel!(heap, handles, hazards, scheduled_times,
-                                       v::Integer, node_state::Vector{Int},
-                                       spont_total_rate::Vector{Float64},
-                                       t_now::Float64, rng::AbstractRNG;
-                                       fresh::Bool)
-    event_id = _spontaneous_event_id(v)
-    new_hazard = spont_total_rate[node_state[v]]
-    _reschedule_channel!(heap, handles, hazards, scheduled_times,
-                         event_id, new_hazard, t_now, rng; fresh = fresh)
+function _nr_refresh_spontaneous!(ch::_NRChannels, v::Integer, rm::_RunModel, node_state::Vector{Int},
+                                  t_now::Float64, rng::AbstractRNG; fresh::Bool)
+    _reschedule_channel!(ch.heap, ch.handles, ch.hazards, ch.times, _spontaneous_event_id(v),
+                         rm.spont_total[node_state[v]], t_now, rng; fresh = fresh)
 end
 
-function _refresh_infection_channel!(heap, handles, hazards, scheduled_times,
-                                     v::Integer, g::AbstractGraph,
-                                     model::OutbreakModel,
-                                     node_state::Vector{Int},
-                                     infection_by_src,
-                                     via_mask::Dict{OutbreakTransition, BitVector},
-                                     t_now::Float64, rng::AbstractRNG;
-                                     fresh::Bool)
-    event_id = _infection_event_id(v, nv(g))
-    new_hazard = _infection_hazard(v, g, model, node_state,
-                                   infection_by_src[node_state[v]], via_mask)
-    _reschedule_channel!(heap, handles, hazards, scheduled_times,
-                         event_id, new_hazard, t_now, rng; fresh = fresh)
+function _nr_refresh_contact!(ch::_NRChannels, v::Integer, layers, weights, rm::_RunModel,
+                              node_state::Vector{Int}, t_now::Float64, rng::AbstractRNG; fresh::Bool)
+    h = _contact_hazard!(ch.tally, v, layers, weights, node_state, rm)
+    _reschedule_channel!(ch.heap, ch.handles, ch.hazards, ch.times, _infection_event_id(v, ch.n),
+                         h, t_now, rng; fresh = fresh)
+end
+
+# The graph-process channel (nothing to do without a process).
+_nr_refresh_process!(::_NRChannels, ::Nothing, ::Float64, ::AbstractRNG; fresh::Bool) = nothing
+function _nr_refresh_process!(ch::_NRChannels, proc, t_now::Float64, rng::AbstractRNG; fresh::Bool)
+    _reschedule_channel!(ch.heap, ch.handles, ch.hazards, ch.times, _process_event_id(ch.n),
+                         _process_rate(proc), t_now, rng; fresh = fresh)
+end
+
+# Node v changed compartment: fresh clocks for its own channels, Gibson–Bruck rescaling for its neighbours in every
+# layer that carries weight (one layer for a single graph, in the graph's neighbour order).
+function _nr_refresh_node!(ch::_NRChannels, v::Integer, layers, weights, rm::_RunModel,
+                           node_state::Vector{Int}, t_now::Float64, rng::AbstractRNG)
+    _nr_refresh_spontaneous!(ch, v, rm, node_state, t_now, rng; fresh = true)
+    _nr_refresh_contact!(ch, v, layers, weights, rm, node_state, t_now, rng; fresh = true)
+    for l in eachindex(layers)
+        weights[l] > 0 || continue
+        for u in neighbors(layers[l], v)
+            _nr_refresh_contact!(ch, u, layers, weights, rm, node_state, t_now, rng; fresh = false)
+        end
+    end
+    return nothing
+end
+
+function _nr_after_intervention!(ch::_NRChannels, touched, layers, weights, rm::_RunModel,
+                                 node_state::Vector{Int}, proc, t_now::Float64, rng::AbstractRNG)
+    if touched === nothing           # rates changed: every hazard may differ; rescale all clocks
+        for v in 1:ch.n
+            _nr_refresh_spontaneous!(ch, v, rm, node_state, t_now, rng; fresh = false)
+            _nr_refresh_contact!(ch, v, layers, weights, rm, node_state, t_now, rng; fresh = false)
+        end
+    else
+        for v in touched
+            _nr_refresh_node!(ch, v, layers, weights, rm, node_state, t_now, rng)
+        end
+    end
+    _nr_refresh_process!(ch, proc, t_now, rng; fresh = false)
+    return nothing
 end
 
 function _reschedule_channel!(heap::MutableBinaryMinHeap{Tuple{Float64, Int}},
@@ -229,6 +226,9 @@ function _reschedule_channel!(heap::MutableBinaryMinHeap{Tuple{Float64, Int}},
                               rng::AbstractRNG; fresh::Bool)
     old_hazard = hazards[event_id]
     old_time = scheduled_times[event_id]
+    # Nothing to do (and no random draw) when a silent channel stays silent, or a live one keeps its hazard.
+    new_hazard <= 0.0 && old_hazard <= 0.0 && return nothing
+    !fresh && new_hazard == old_hazard && old_time > t_now && return nothing
     new_time = if new_hazard <= 0.0
         Inf
     elseif fresh || old_hazard <= 0.0 || !isfinite(old_time) || old_time <= t_now
@@ -249,61 +249,4 @@ function _reschedule_channel!(heap::MutableBinaryMinHeap{Tuple{Float64, Int}},
         update!(heap, handle, (new_time, event_id))
     end
     return nothing
-end
-
-# --- hazards and event sampling ---
-
-function _infection_hazard(v::Integer, g::AbstractGraph, model::OutbreakModel,
-                           node_state::Vector{Int}, trs::Vector{OutbreakTransition},
-                           via_mask::Dict{OutbreakTransition, BitVector})
-    isempty(trs) && return 0.0
-    hazard = 0.0
-    for tr in trs
-        mask = via_mask[tr]
-        n_via = 0
-        for u in neighbors(g, v)
-            mask[node_state[u]] && (n_via += 1)
-        end
-        hazard += tr.rate * n_via
-    end
-    return hazard
-end
-
-function _sample_spontaneous_transition(trs::Vector{OutbreakTransition}, rng::AbstractRNG)
-    length(trs) == 1 && return trs[1]
-    total = sum((tr.rate for tr in trs); init = 0.0)
-    target = rand(rng) * total
-    cum = 0.0
-    for tr in trs
-        cum += tr.rate
-        target <= cum && return tr
-    end
-    return trs[end]
-end
-
-function _sample_infection_transition(v::Integer, g::AbstractGraph, model::OutbreakModel,
-                                      node_state::Vector{Int},
-                                      trs::Vector{OutbreakTransition},
-                                      via_mask::Dict{OutbreakTransition, BitVector},
-                                      rng::AbstractRNG)
-    length(trs) == 1 && return trs[1]
-    weights = zeros(Float64, length(trs))
-    total = 0.0
-    for (j, tr) in pairs(trs)
-        mask = via_mask[tr]
-        n_via = 0
-        for u in neighbors(g, v)
-            mask[node_state[u]] && (n_via += 1)
-        end
-        w = tr.rate * n_via
-        weights[j] = w
-        total += w
-    end
-    target = rand(rng) * total
-    cum = 0.0
-    for (j, tr) in pairs(trs)
-        cum += weights[j]
-        target <= cum && return tr
-    end
-    return trs[end]
 end

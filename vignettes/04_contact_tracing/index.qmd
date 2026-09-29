@@ -1,124 +1,145 @@
 ---
-title: "Contact Tracing"
+title: "Neighbour-triggered quarantine"
+subtitle: "NetworkOutbreaks.jl vignette 04 (scenarios `:sir_pois5`, `:sirq_pois5_a{005,01,02}`)"
 author: "Simon Frost"
-date: today
-subtitle: "NetworkOutbreaks.jl Vignette 04"
-engine: julia
-julia:
-  project: ".."
 ---
 
-## Introduction
+## What this page shows
 
-Contact tracing quarantines the contacts of detected infectious
-individuals. NetworkOutbreaks.jl models this using `:contact_trace`
-transitions — a rate-based neighbour-dependent mechanism that preserves
-Gillespie correctness by treating each quarantine as an elementary SSA event.
+A susceptible node with an infectious neighbour is quarantined at the per-contact rate α, as it
+is infected at the per-contact rate τ:
 
-## Setup
+    S + I → 2I   (τ),     S + I → Q + I   (α),     I → R   (γ).
+
+This is a *contact* whose product Q is not infected, so it is not an infection: Q nodes do not
+count towards the final size. (It quarantines exposed susceptibles; it does not trace and
+isolate infected nodes.) Both contacts act across the same edge, so the model is edge-based
+admissible: each edge from an infectious node fires at rate τ + α, and the recipient becomes I
+with probability τ/(τ + α) and Q otherwise. The edge-based model is therefore exact in the
+large-N limit, and this page checks it against committed NetworkOutbreaks ensembles at
+α = 0.05, 0.1 and 0.2.
+
+## Set-up and the model twice
 
 ```{julia}
-using NetworkOutbreaks
-using Graphs
-using StableRNGs
-using Statistics
-using Plots
+ENV["GKSwstype"] = "100"            # GR draws off-screen
+using NetworkEpiCore, NetworkOutbreaks, Catalyst, Plots, Printf, Statistics
+using EdgeBasedModels
+include(joinpath(@__DIR__, "..", "_shared", "scenarios.jl"))   # SIRQ, sirq_scenario, VIGNETTE_DATA
+include(joinpath(@__DIR__, "..", "_shared", "plotstyle.jl"))     # cmp_style, legend_room!, default font sizes
+
+model = contact_model(SIRQ)            # the Catalyst network of _shared/scenarios.jl
 ```
 
-## SIRQ model with contact tracing
-
-Susceptible individuals are quarantined (S → Q) at a rate proportional
-to the number of infectious neighbours they have. The `via` keyword
-specifies which compartments trigger the tracing:
+The same model from the direct constructor:
 
 ```{julia}
-sirq = OutbreakModel(
-    [:S, :I, :R, :Q],
-    [false, true, false, false],
-    [OutbreakTransition(:S, :I, 1/6, :infection; via = [:I]),
-     OutbreakTransition(:I, :R, 0.25, :spontaneous),
-     OutbreakTransition(:S, :Q, 0.1, :contact_trace; via = [:I])];
-    name = :SIRQ)
+modelD = ContactModel(:sirq; contacts = [Contact(:S, :I, :I, :τ), Contact(:S, :I, :Q, :α)],
+                      transitions = [NodeTransition(:I, :R, :γ)])
+@assert isequivalent(model, modelD)
+@show infected_species(model)          # Q is not infected (design §J.8)
+@show entry_species(model);
 ```
 
-The `:contact_trace` transition `S → Q` fires at rate 0.1 per
-(S-node, I-neighbour) pair — the same edge-counting mechanism as
-`:infection`, but moving the susceptible to quarantine instead of
-infecting them. This models imperfect tracing: only a fraction of
-contacts are traced per unit time.
-
-## Baseline SIR (no tracing)
+In NetworkOutbreaks the quarantine contact becomes a neighbour-dependent transition S → Q (listed
+with the neighbour-dependent type `:infection`); Q is not in the infected set, so `final_size`
+does not count it:
 
 ```{julia}
-N = 1000
-g = erdos_renyi(N, 5 / (N - 1); rng = StableRNG(42))
-
-sir = OutbreakModel([:S, :I, :R], [false, true, false],
-    [OutbreakTransition(:S, :I, 1/6, :infection; via = [:I]),
-     OutbreakTransition(:I, :R, 0.25, :spontaneous)]; name = :SIR)
-
-spec_sir = OutbreakSpec(model = sir, network = g,
-    initial = SeedFraction(:I => 0.01), tspan = (0.0, 40.0))
-ens_sir = simulate_ensemble(spec_sir; nsims = 200, seed = 1, parallel = false)
-t_sir, μ_sir = mean_curve(ens_sir, :I)
+sc1 = sirq_scenario(0.1)
+OutbreakModel(model, sc1.params; network = sc1.network)
 ```
 
-## With contact tracing
+The edge-based model from both, and its per-reaction terms: both contacts deplete θ through
+φ_I, and each feeds its own product.
 
 ```{julia}
-spec_ct = OutbreakSpec(model = sirq, network = g,
-    initial = SeedFraction(:I => 0.01), tspan = (0.0, 40.0))
-ens_ct = simulate_ensemble(spec_ct; nsims = 200, seed = 1, parallel = false)
-t_ct, μ_ct = mean_curve(ens_ct, :I)
-_, μ_Q = mean_curve(ens_ct, :Q)
+sys  = edge_based(model, sc1.network)
+sysD = edge_based(modelD, sc1.network)
+@assert vector_fields_equal(symbolic_ode(sys), symbolic_ode(sysD))
+lift_contributions(model, sc1.network)
 ```
 
-```{julia}
-#| label: fig-contact-tracing
-#| fig-cap: "SIR epidemic with and without contact tracing (quarantine rate 0.1 per I-neighbour)."
-plot(t_sir, μ_sir ./ N, label = "No tracing", lw = 2, color = :red,
-     xlabel = "Time", ylabel = "Fraction",
-     title = "Contact tracing: S→Q at rate 0.1 per I-neighbour")
-plot!(t_ct, μ_ct ./ N, label = "I (with tracing)", lw = 2, color = :blue)
-plot!(t_ct, μ_Q ./ N, label = "Q (quarantined)", lw = 2, ls = :dash, color = :purple)
-```
-
-Contact tracing reduces the peak by quarantining susceptible contacts
-before they can be infected. The quarantined fraction Q grows as the
-epidemic progresses.
-
-## Varying tracing intensity
+## Against the committed ensembles
 
 ```{julia}
-#| label: fig-tracing-intensity
-#| fig-cap: "Higher tracing rates (α) reduce the epidemic more effectively."
-p = plot(t_sir, μ_sir ./ N, label = "No tracing", lw = 2, color = :grey,
-         xlabel = "Time", ylabel = "Infected fraction",
-         title = "Contact tracing intensity")
-for (α, col) in [(0.05, :orange), (0.1, :blue), (0.2, :green), (0.5, :purple)]
-    m = OutbreakModel([:S, :I, :R, :Q], [false, true, false, false],
-        [OutbreakTransition(:S, :I, 1/6, :infection; via = [:I]),
-         OutbreakTransition(:I, :R, 0.25, :spontaneous),
-         OutbreakTransition(:S, :Q, α, :contact_trace; via = [:I])]; name = :SIRQ)
-    spec = OutbreakSpec(model = m, network = g,
-        initial = SeedFraction(:I => 0.01), tspan = (0.0, 40.0))
-    ens = simulate_ensemble(spec; nsims = 200, seed = 1, parallel = false)
-    _, μ = mean_curve(ens, :I)
-    plot!(p, t_sir[1:length(μ)], μ ./ N,
-          label = "α=$α", lw = 2, color = col)
+results = []
+for α in TRACING_RATES
+    sc  = sirq_scenario(α)
+    ref = scenario_summary(sc; dir = VIGNETTE_DATA)
+    det = model_curves(sys, solve_epidemic(sys, sc); t = sc.tgrid, label = "edge-based")
+    push!(results, (α = α, sc = sc, ref = ref, det = det, tab = compare(ref, det)))
+    @printf(":%s (hash %s): N = %d, %d runs, %s, P(major) = %.3f (CI %.3f–%.3f)\n", sc.id,
+            first(scenario_hash(sc), 8), ref.N, ref.nsims, sc.sim.condition, ref.p_major, ref.p_major_ci...)
 end
-p
 ```
 
-Higher tracing rates suppress the epidemic more effectively. At α=0.5
-(tracing rate 3× the transmission rate), the epidemic is nearly
-eliminated.
+```{julia}
+x = results[1]; comparisonplot(x.ref, x.det; observables = [:I, :Q, :cumulative], plot_title = "α = $(x.α)", cmp_style(3; title = true)...) |> legend_room!
+```
 
-## Summary
+```{julia}
+x = results[2]; comparisonplot(x.ref, x.det; observables = [:I, :Q, :cumulative], plot_title = "α = $(x.α)", cmp_style(3; title = true)...) |> legend_room!
+```
 
-- `:contact_trace` transitions provide rate-based contact tracing
-  within the Gillespie SSA framework.
-- Each quarantine is an elementary SSA event — no batch state changes.
-- The `via` keyword controls which compartments trigger tracing.
-- Tracing intensity (rate α) determines effectiveness: α ≈ β
-  substantially reduces the epidemic.
+```{julia}
+x = results[3]; comparisonplot(x.ref, x.det; observables = [:I, :Q, :cumulative], plot_title = "α = $(x.α)", cmp_style(3; title = true)...) |> legend_room!
+```
+
+```{julia}
+@printf("%6s %9s %8s %9s %8s %10s %24s\n", "α", "D∞(I)", "z∞(I)", "D∞(Q)", "z∞(Q)", "ΔR∞", "95% CI")
+for x in results
+    a = x.tab["edge-based", :I]; b = x.tab["edge-based", :Q]
+    @printf("%6.2f %9.5f %8.2f %9.5f %8.2f %+10.5f   (%+.5f, %+.5f)\n", x.α, a.D∞, a.z∞, b.D∞, b.z∞,
+            a.ΔR∞, a.ΔR∞_ci...)
+end
+```
+
+All three pairs meet the §E.2 criteria for `:exact_limit` (D∞(I) < 0.005, |ΔR∞| < 0.005); at
+α = 0.05 the ΔR∞ interval just excludes 0, a difference of about 2·10⁻³ in the final size.
+
+## How much quarantine stops the epidemic?
+
+With a single entry state the edge-based R₀ is κ_ex·T, where T = τ/(τ + α + γ) is the probability
+that an edge from an infectious node transmits before it quarantines the recipient or recovers.
+On Poisson(5) (κ_ex = 5) R₀ = 1 at α_c = τκ_ex − τ − γ:
+
+```{julia}
+τ, γ = sc1.params[:τ], sc1.params[:γ]
+κex = excess_degree(sc1.network)
+αc = τ * κex - τ - γ
+@printf("κ_ex = %.3f; R₀(α = 0) = %.3f; α_c = %.4f (= 5/12 = %.4f)\n", κex, κex * τ / (τ + γ), αc, 5 / 12)
+```
+
+The final size against α from the edge-based model, with the three ensembles and the committed
+baseline `:sir_pois5` (α = 0):
+
+```{julia}
+fs(α) = (s = derive(sc1; id = :tmp, params = Dict(:α => α), tspan = (0.0, 300.0));
+         model_curves(sys, solve_epidemic(sys, s); t = s.tgrid)[:cumulative][end])
+αs = range(0, 0.5; length = 51)
+R = [fs(α) for α in αs]
+base = scenario_summary(:sir_pois5)
+se(x) = std(x) / sqrt(length(x))
+plt = plot(αs, R; lw = 2, color = :royalblue, label = "edge-based", xlabel = "quarantine rate α (per contact)",
+           ylabel = "final size (ever infected)", legend = :topright)
+vline!(plt, [αc]; ls = :dash, color = :black, label = "α_c = τκ_ex − τ − γ")
+pts = [(0.0, base.final_size[base.major]); [(x.α, x.ref.final_size[x.ref.major]) for x in results]]
+scatter!(plt, first.(pts), [mean(last(p)) for p in pts]; yerror = [1.96se(last(p)) for p in pts],
+         color = :gray20, label = "SSA mean ± 1.96 SE (major runs)")
+plt
+```
+
+```{julia}
+@printf("edge-based final size at α = 0.40: %.4f, at α = 0.45: %.4f (near and above α_c the 1%% seeds and their short chains dominate)\n",
+        fs(0.40), fs(0.45))
+```
+
+## Reproducibility
+
+```{julia}
+for x in results
+    @printf(":%s hash %s, %s\n", x.sc.id, first(scenario_hash(x.sc), 8), x.ref.provenance["generator"])
+end
+println("regenerate with vignettes/data/generate.jl; Julia ", VERSION)
+```

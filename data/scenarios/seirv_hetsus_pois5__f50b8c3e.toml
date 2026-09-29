@@ -1,0 +1,39 @@
+N = 10000
+algorithm_revision = "2"
+curves_file = "seirv_hetsus_pois5__f50b8c3e.curves.csv"
+id = "seirv_hetsus_pois5"
+n_major = 200
+nsims = 200
+observables = ["S_lo", "S_hi", "E_lo", "I", "E_hi", "R", "V", "infectious", "cumulative"]
+p_major = 1.0
+p_major_ci = [0.9811546736227335, 1.0]
+runs_file = "seirv_hetsus_pois5__f50b8c3e.runs.csv"
+scenario_hash = "f50b8c3ec11ddbbd29dc074d263358fad900b654096e3ff7d9c779d70c7ddf33"
+statistics = ["mean", "sd", "se", "q025", "q25", "q50", "q75", "q975"]
+summary_format = 1
+uncond_equals_cond = true
+
+[extras.conditioning]
+largest_unselected = nan
+measure = "new infections by t_end (excluding the seeds) / N"
+n_selected = 200
+rule = "MajorOutbreak(0.05)"
+smallest_selected = 0.5476
+
+[extras.sampling]
+algorithm = "NextReaction"
+base_seed = "20260926"
+graphs = "per_run"
+se = "iid (sd/sqrt(n))"
+
+[provenance]
+Graphs = "1.14.0"
+NetworkEpiCore = "0.1.0"
+NetworkOutbreaks = "0.2.0"
+StableRNGs = "1.0.4"
+algorithm = "NextReaction"
+algorithm_revision = "2"
+generator = "NetworkOutbreaks.summarise(scenario_ensemble(sc))"
+julia_version = "1.12.7"
+summary_digits = "mean=6,se=6,sd=5,quantiles=5,times=6"
+summary_revision = "2"
