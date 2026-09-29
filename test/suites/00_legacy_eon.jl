@@ -1,3 +1,6 @@
+# Legacy NetworkOutbreaks tests (EoN-equivalent patterns, from test/test_eon_patterns.jl), moved verbatim from the 0.1 test/runtests.jl
+# (Phase 0 split; see DESIGN_NetworkEpiCore.md §G.1). Owned by the WP that later replaces this area.
+
 """
 EoN-equivalent test suite for NetworkOutbreaks.jl
 
@@ -86,11 +89,13 @@ using Statistics
         @test issorted(final_sizes)
     end
 
-    @testset "MultiplexNetwork (test_SIR_dynamics)" begin
+    # 0.2: the graph container MultiplexNetwork of 0.1 is MultiplexGraph (MultiplexNetwork is NetworkEpiCore's
+    # descriptor; MIGRATION.md)
+    @testset "MultiplexGraph (test_SIR_dynamics)" begin
         N = 200
         g1 = erdos_renyi(N, 3 / (N - 1); rng = StableRNG(1))
         g2 = erdos_renyi(N, 5 / (N - 1); rng = StableRNG(2))
-        net = MultiplexNetwork([g1, g2], [0.2, 0.1])
+        net = MultiplexGraph([g1, g2], [0.2, 0.1])
         model = OutbreakModel([:S, :I, :R], [false, true, false],
             [OutbreakTransition(:S, :I, 1.0, :infection; via = [:I]),
              OutbreakTransition(:I, :R, 0.25, :spontaneous)]; name = :SIR)

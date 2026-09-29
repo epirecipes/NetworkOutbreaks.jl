@@ -1,11 +1,18 @@
 #=
-state.jl
+state.jl (owner: WP16)
 
-Mutable simulation state. Holds per-node compartment indices and counters
-of nodes per compartment. Per-node infection counters are tracked
-optionally for reinfection-counting analyses.
+Mutable simulation state: per-node compartment indices, the number of nodes per compartment, and per-node
+infection counts (for `final_size` and reinfection counting).
 =#
 
+"""
+    OutbreakState(model, node_state)
+
+The mutable state of a run: `node_state` (the compartment index of every node), `counts` (nodes per compartment)
+and `infection_counts` (per node, the number of entries into an infected compartment). The constructor validates
+the indices and counts every node that starts in one of the model's infected compartments once (so latent seeds count
+too, see `final_size`).
+"""
 mutable struct OutbreakState
     model::OutbreakModel
     node_state::Vector{Int}            # length nv(graph): compartment index per node
@@ -15,18 +22,17 @@ end
 
 function OutbreakState(model::OutbreakModel, node_state::Vector{Int})
     n = length(node_state)
-    counts = zeros(Int, ncompartments(model))
-    @inbounds for v in 1:n
+    C = ncompartments(model)
+    counts = zeros(Int, C)
+    for v in 1:n
         idx = node_state[v]
-        1 <= idx <= ncompartments(model) ||
+        1 <= idx <= C ||
             throw(ArgumentError("node $v has invalid state index $idx"))
         counts[idx] += 1
     end
     infection_counts = zeros(Int, n)
-    # If a node starts in an infectious compartment, count that as one
-    # infection (the seed event).
-    @inbounds for v in 1:n
-        if model.infectious[node_state[v]]
+    for v in 1:n
+        if model.infected[node_state[v]]
             infection_counts[v] = 1
         end
     end
