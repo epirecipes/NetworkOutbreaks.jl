@@ -94,12 +94,16 @@ function _apply_seed!(state, model::OutbreakModel, seed::SeedNodes,
         idx = model.index_of[sym]
         @inbounds for v in nodes
             1 <= v <= n || throw(BoundsError("node $v out of range 1:$n"))
+            assigned[v] &&
+                throw(ArgumentError("node $v is assigned more than once in SeedNodes"))
             state[v] = idx
             assigned[v] = true
         end
     end
     default = something(seed.default,
                         _default_compartment(model, (k for (k, _) in seed.assignments)))
+    haskey(model.index_of, default) ||
+        throw(ArgumentError("unknown default compartment $(default) in SeedNodes"))
     default_idx = model.index_of[default]
     @inbounds for v in 1:n
         if !assigned[v]

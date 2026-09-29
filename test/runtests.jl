@@ -33,6 +33,90 @@ using Statistics: mean
         @test R[end] >= 1
     end
 
+    @testset "Model and seed validation" begin
+        comps = [:S, :I, :R]
+        inf = [false, true, false]
+        trs = [
+            OutbreakTransition(:S, :I, 0.5, :infection; via = [:I]),
+            OutbreakTransition(:I, :R, 1.0, :spontaneous),
+        ]
+        model = OutbreakModel(comps, inf, trs; name = :SIR)
+
+        @test_throws ArgumentError OutbreakModel([:S, :S], [false, true], trs)
+        @test_throws ArgumentError OutbreakModel([:S, :I], [false], trs)
+        @test_throws ArgumentError OutbreakModel(comps, inf,
+            [OutbreakTransition(:X, :I, 0.5, :infection)])
+        @test_throws ArgumentError OutbreakModel(comps, inf,
+            [OutbreakTransition(:S, :I, 0.5, :unknown)])
+        @test_throws ArgumentError OutbreakModel(comps, inf,
+            [OutbreakTransition(:S, :I, -0.1, :infection)])
+        @test_throws ArgumentError OutbreakModel(comps, inf,
+            [OutbreakTransition(:S, :I, 0.5, :infection; via = [:X])])
+
+        g = SimpleGraph(10)
+        spec = OutbreakSpec(model = model, network = g,
+                            initial = SeedFraction(:I => 0.2),
+                            tspan = (0.0, 1.0))
+        state = NetworkOutbreaks.initial_state(spec, StableRNG(1))
+        @test count(==(model.index_of[:I]), state) == 2
+        @test count(==(model.index_of[:S]), state) == 8
+        @test sum(count(==(i), state) for i in 1:length(comps)) == 10
+
+        @test_throws ArgumentError NetworkOutbreaks.initial_state(
+            OutbreakSpec(model = model, network = g,
+                         initial = SeedFraction(:Z => 0.1),
+                         tspan = (0.0, 1.0)),
+            StableRNG(1))
+        @test_throws ArgumentError NetworkOutbreaks.initial_state(
+            OutbreakSpec(model = model, network = g,
+                         initial = SeedFraction(:I => 0.95, :R => 0.1),
+                         tspan = (0.0, 1.0)),
+            StableRNG(1))
+
+        node_spec = OutbreakSpec(model = model, network = g,
+                                 initial = SeedNodes(:I => [2, 4]),
+                                 tspan = (0.0, 1.0))
+        node_state = NetworkOutbreaks.initial_state(node_spec, StableRNG(2))
+        @test node_state[2] == model.index_of[:I]
+        @test node_state[4] == model.index_of[:I]
+        @test count(==(model.index_of[:S]), node_state) == 8
+        @test_throws ArgumentError NetworkOutbreaks.initial_state(
+            OutbreakSpec(model = model, network = g,
+                         initial = SeedNodes(:I => [2], :R => [2]),
+                         tspan = (0.0, 1.0)),
+            StableRNG(2))
+        @test_throws ArgumentError NetworkOutbreaks.initial_state(
+            OutbreakSpec(model = model, network = g,
+                         initial = SeedNodes(:I => [2]; default = :Z),
+                         tspan = (0.0, 1.0)),
+            StableRNG(2))
+    end
+
+    @testset "Trajectory and network semantics" begin
+        model = OutbreakModel([:S, :I, :R], [false, true, false],
+            [OutbreakTransition(:S, :I, 0.5, :infection),
+             OutbreakTransition(:I, :R, 1.0, :spontaneous)]; name = :SIR)
+        counts = [10 9 8;
+                   0 1 1;
+                   0 0 1]
+        traj = OutbreakTrajectory(model, [0.0, 1.0, 3.0], counts,
+                                  zeros(Int, 10), OutbreakEvent[], UInt64(1), :unit)
+        @test state_at(traj, -1.0) == [10, 0, 0]
+        @test state_at(traj, 0.0) == [10, 0, 0]
+        @test state_at(traj, 2.0) == [9, 1, 0]
+        @test state_at(traj, 3.0) == [8, 1, 1]
+        @test state_at(traj, 10.0) == [8, 1, 1]
+        @test_throws ArgumentError compartment_series(traj, :X)
+
+        g = SimpleGraph(4)
+        updates = [(t = 5, src = 1, dst = 2, action = "add"),
+                   (t = 1.0, src = 2, dst = 3, action = :remove)]
+        tvn = TimeVaryingNetwork(g, updates)
+        @test [u.t for u in tvn.updates] == [1.0, 5.0]
+        @test tvn.updates[2].action == :add
+        @test tvn.updates[2].src isa Int
+    end
+
     @testset "Determinism by seed" begin
         comps = [:S, :I]
         inf = [false, true]
