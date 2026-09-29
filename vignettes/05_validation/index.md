@@ -112,12 +112,13 @@ sc199 = derive(sc; nsims = 199)
 try
     scenario_summary(sc199)
 catch err
-    println(first(sprint(showerror, err), 300), " …")
+    # print paths relative to the checkout, not the machine it was rendered on
+    println(first(replace(sprint(showerror, err), dirname(pkgdir(NetworkOutbreaks)) * "/" => ""), 300), " …")
 end
 ```
 
     derived :sir_pois5_nsims199, hash 084ac855
-    ArgumentError: scenario_summary(:sir_pois5_nsims199): no valid committed summary (hash 084ac855, algorithm revision 2, summary revision 2) in /Users/sdwfrost/Projects/edgebasedmodels/NetworkOutbreaks.jl/data/scenarios: ArgumentError: load_summary: no summary sir_pois5_nsims199__084ac855 for scenario …
+    ArgumentError: scenario_summary(:sir_pois5_nsims199): no valid committed summary (hash 084ac855, algorithm revision 2, summary revision 2) in NetworkOutbreaks.jl/data/scenarios: ArgumentError: load_summary: no summary sir_pois5_nsims199__084ac855 for scenario :sir_pois5_nsims199 in NetworkOutbreaks. …
 
 Run r uses graph r, drawn from `stable_rng(b + r)`, and the SSA stream
 `stable_rng(b + 2³² + r)` (b the base seed; design §J.7). So any run of
@@ -342,12 +343,12 @@ end
 ``` julia
 println("NetworkOutbreaks ALGORITHM_REVISION = ", NetworkOutbreaks.ALGORITHM_REVISION,
         ", SUMMARY_REVISION = ", NetworkOutbreaks.SUMMARY_REVISION)
-println("committed summaries: ", scenario_data_dir())
-println("vignette-local summaries: ", VIGNETTE_DATA, " (", length(vignette_scenarios()), " scenarios)")
+println("committed summaries: ", relpath(scenario_data_dir(), dirname(pkgdir(NetworkOutbreaks))))
+println("vignette-local summaries: ", relpath(VIGNETTE_DATA, dirname(pkgdir(NetworkOutbreaks))), " (", length(vignette_scenarios()), " scenarios)")
 println("Julia ", VERSION)
 ```
 
     NetworkOutbreaks ALGORITHM_REVISION = 2, SUMMARY_REVISION = 2
-    committed summaries: /Users/sdwfrost/Projects/edgebasedmodels/NetworkOutbreaks.jl/data/scenarios
-    vignette-local summaries: /Users/sdwfrost/Projects/edgebasedmodels/NetworkOutbreaks.jl/vignettes/data (11 scenarios)
+    committed summaries: NetworkOutbreaks.jl/data/scenarios
+    vignette-local summaries: NetworkOutbreaks.jl/vignettes/data (11 scenarios)
     Julia 1.12.7

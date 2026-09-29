@@ -73,7 +73,8 @@ sc199 = derive(sc; nsims = 199)
 try
     scenario_summary(sc199)
 catch err
-    println(first(sprint(showerror, err), 300), " …")
+    # print paths relative to the checkout, not the machine it was rendered on
+    println(first(replace(sprint(showerror, err), dirname(pkgdir(NetworkOutbreaks)) * "/" => ""), 300), " …")
 end
 ```
 
@@ -249,7 +250,7 @@ end
 ```{julia}
 println("NetworkOutbreaks ALGORITHM_REVISION = ", NetworkOutbreaks.ALGORITHM_REVISION,
         ", SUMMARY_REVISION = ", NetworkOutbreaks.SUMMARY_REVISION)
-println("committed summaries: ", scenario_data_dir())
-println("vignette-local summaries: ", VIGNETTE_DATA, " (", length(vignette_scenarios()), " scenarios)")
+println("committed summaries: ", relpath(scenario_data_dir(), dirname(pkgdir(NetworkOutbreaks))))
+println("vignette-local summaries: ", relpath(VIGNETTE_DATA, dirname(pkgdir(NetworkOutbreaks))), " (", length(vignette_scenarios()), " scenarios)")
 println("Julia ", VERSION)
 ```

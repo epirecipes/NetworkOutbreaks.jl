@@ -3,6 +3,7 @@ project:
   # The current pages (the pre-0.2 pages 01_reinfection_validation/ and 02_algorithm_comparison/ were
   # superseded by 01_sis_reinfection/ and 02_algorithms_dynamic_networks/ and have been removed).
   render:
+    - index.qmd
     - 01_sis_reinfection/index.qmd
     - 02_algorithms_dynamic_networks/index.qmd
     - 03_interventions/index.qmd
@@ -11,6 +12,10 @@ project:
     - 06_processes/index.qmd
 
 engine: julia
+
+# Rewrites links to other pages (`01_…/index.qmd`) to index.md in gfm and index.html otherwise.
+filters:
+  - _shared/qmd-links.lua
 
 freeze: auto
 
